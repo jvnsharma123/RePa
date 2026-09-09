@@ -1,0 +1,3 @@
+-- Research Manuscript Studio Supabase Schema
+-- See /supabase/migrations/20260827_initial_schema.sql for the complete version.
+-- You can run the entire migration script in the Supabase SQL Editor.

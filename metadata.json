@@ -1,0 +1,6 @@
+{
+  "name": "Research Manuscript Studio",
+  "description": "A serious academic manuscript preparation platform transforming research data, findings, tables, and figures into structured journal and thesis manuscripts with strict fact traceability.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
