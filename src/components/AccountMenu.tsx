@@ -9,14 +9,18 @@ import {
   ShieldCheck,
   Building,
   Key,
-  LogIn
+  LogIn,
+  CreditCard,
+  ArrowUpRight,
 } from 'lucide-react';
 import { UserProfile } from '../types';
 import { signOutUser } from '../services/supabase';
+import { PlanTier, PLAN_CONFIGS } from '../types/subscription';
 
 interface AccountMenuProps {
   userProfile: UserProfile | null;
   isAuthenticated: boolean;
+  currentPlan?: PlanTier;
   onOpenAuthModal: () => void;
   onOpenProfileModal: () => void;
   onNavigate: (view: string) => void;
@@ -26,6 +30,7 @@ interface AccountMenuProps {
 export const AccountMenu: React.FC<AccountMenuProps> = ({
   userProfile,
   isAuthenticated,
+  currentPlan = 'FREE',
   onOpenAuthModal,
   onOpenProfileModal,
   onNavigate,
@@ -103,13 +108,33 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({
             <p className="text-[11px] text-gray-500 truncate">{userProfile?.email}</p>
             <div className="mt-2 pt-2 border-t border-gray-200 flex items-center justify-between text-[10px]">
               <span className="text-gray-500">{userProfile?.role || 'Principal Investigator'}</span>
-              <span className="px-1.5 py-0.5 rounded bg-gray-200/80 text-gray-800 font-medium">
-                {userProfile?.subscriptionTier || 'Academic Pro'}
+              <span className={`px-1.5 py-0.5 rounded font-bold font-mono ${
+                currentPlan === 'PRO_RESEARCHER'
+                  ? 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                  : currentPlan === 'RESEARCHER'
+                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                  : 'bg-gray-200/80 text-gray-800'
+              }`}>
+                {PLAN_CONFIGS[currentPlan]?.name || 'Free'} Plan
               </span>
             </div>
           </div>
 
           {/* Menu items */}
+          <button
+            onClick={() => {
+              setIsOpen(false);
+              onNavigate('pricing');
+            }}
+            className="w-full text-left px-3 py-2 rounded-md hover:bg-gray-100 flex items-center justify-between transition-colors cursor-pointer text-gray-800 hover:text-black font-semibold bg-gray-50/50 mb-1 border border-gray-200/60"
+          >
+            <div className="flex items-center gap-2.5">
+              <CreditCard className="w-4 h-4 text-amber-600" />
+              <span>{currentPlan === 'FREE' ? 'Upgrade to Paid Plan' : 'Subscription & Pricing'}</span>
+            </div>
+            <ArrowUpRight className="w-3.5 h-3.5 text-gray-400" />
+          </button>
+
           <button
             onClick={() => {
               setIsOpen(false);

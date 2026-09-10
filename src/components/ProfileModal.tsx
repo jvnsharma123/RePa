@@ -8,6 +8,8 @@ interface ProfileModalProps {
   onClose: () => void;
   userProfile: UserProfile | null;
   onProfileUpdated: (updated: UserProfile) => void;
+  currentPlan?: string;
+  onNavigateToPricing?: () => void;
 }
 
 export const ProfileModal: React.FC<ProfileModalProps> = ({
@@ -15,6 +17,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onClose,
   userProfile,
   onProfileUpdated,
+  currentPlan,
+  onNavigateToPricing,
 }) => {
   const [name, setName] = useState(userProfile?.name || '');
   const [institution, setInstitution] = useState(userProfile?.institution || '');
@@ -159,10 +163,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <Shield className="w-4 h-4 text-gray-600" />
               <div>
                 <span className="text-gray-600 font-medium">Subscription Tier: </span>
-                <span className="text-gray-900 font-semibold">{userProfile?.subscriptionTier || 'Researcher Pro'}</span>
+                <span className="text-gray-900 font-semibold">{currentPlan || userProfile?.subscriptionTier || 'Free Plan'}</span>
               </div>
             </div>
-            <span className="text-[11px] text-gray-500">Cloud Auth Connected</span>
+            {onNavigateToPricing ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onNavigateToPricing();
+                }}
+                className="text-[11px] font-semibold text-black hover:underline cursor-pointer"
+              >
+                Manage / Upgrade
+              </button>
+            ) : (
+              <span className="text-[11px] text-gray-500">Cloud Auth Connected</span>
+            )}
           </div>
 
           <div className="pt-3 border-t border-gray-100 flex items-center justify-end gap-2">

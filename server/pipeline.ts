@@ -25,6 +25,7 @@ import {
   extractProjectFacts,
   generateManuscriptPlan,
   auditManuscriptQuality,
+  fallbackGenerateSection,
 } from './geminiService';
 
 export async function processResearchProject(
@@ -217,7 +218,7 @@ export async function processResearchProject(
         draftResult = await generateAcademicSectionWithAI(sectionTitle, payload, relevantFacts);
       } else {
         // Deterministic template generator for instantaneous zero-quota seeding/offline execution
-        draftResult = await generateAcademicSectionWithAI(sectionTitle, payload, relevantFacts);
+        draftResult = fallbackGenerateSection(sectionTitle, payload, relevantFacts);
       }
     }
 

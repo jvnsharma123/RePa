@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Sparkles,
   ShieldCheck,
@@ -7,18 +7,73 @@ import {
   FileText,
   HelpCircle,
   Info,
-  Sliders
+  Sliders,
+  Zap,
+  Lock,
+  RefreshCw,
+  CreditCard,
 } from 'lucide-react';
-import { Project } from '../types';
+import { Project, UserProfile } from '../types';
+import { PlanTier, PLAN_CONFIGS, SubscriptionState } from '../types/subscription';
+import { checkPlanLimits } from '../services/subscriptionService';
+import { UpgradeModal } from './UpgradeModal';
 
 interface AIContentAnalysisViewProps {
   project: Project;
   onOpenWorkspace: () => void;
+  currentPlan?: PlanTier;
+  subscriptionState?: SubscriptionState;
+  onRecordUsage?: (action: 'ai_analysis' | 'export') => void;
+  onPlanUpgraded?: (plan: PlanTier) => void;
+  userProfile?: UserProfile | null;
+  onNavigateToPricing?: () => void;
 }
 
-export const AIContentAnalysisView: React.FC<AIContentAnalysisViewProps> = ({ project, onOpenWorkspace }) => {
+export const AIContentAnalysisView: React.FC<AIContentAnalysisViewProps> = ({
+  project,
+  onOpenWorkspace,
+  currentPlan = 'FREE',
+  subscriptionState,
+  onRecordUsage,
+  onPlanUpgraded,
+  userProfile,
+  onNavigateToPricing,
+}) => {
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [isRunningAudit, setIsRunningAudit] = useState(false);
+  const [lastAuditedAt, setLastAuditedAt] = useState<string | null>(null);
+
   const manuscript = project.manuscript;
   const sections = manuscript?.sections || [];
+
+  const activePlan: PlanTier = (currentPlan as PlanTier) || 'FREE';
+  const planConfig = PLAN_CONFIGS[activePlan];
+  const currentUsage = subscriptionState?.usage || {
+    aiAnalysesThisMonth: 0,
+    exportsThisMonth: 0,
+  };
+
+  const limitCheck = checkPlanLimits({
+    action: 'ai_analysis',
+    currentPlan: activePlan,
+    currentUsage,
+  });
+
+  const handleRunAudit = () => {
+    if (!limitCheck.allowed) {
+      setShowUpgradeModal(true);
+      return;
+    }
+
+    setIsRunningAudit(true);
+    setTimeout(() => {
+      setIsRunningAudit(false);
+      setLastAuditedAt(new Date().toLocaleTimeString());
+      if (onRecordUsage) {
+        onRecordUsage('ai_analysis');
+      }
+    }, 800);
+  };
 
   const sectionAnalysis = sections.map((sec, idx) => {
     // Generate realistic probabilistic indicators based on section type
@@ -50,10 +105,13 @@ export const AIContentAnalysisView: React.FC<AIContentAnalysisViewProps> = ({ pr
       {/* Top Banner */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-xl font-serif-academic font-bold text-white">AI Writing Pattern & Stylometric Audit</h1>
             <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-medium font-mono">
               Stylometric Integrity
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 font-mono">
+              Plan: {planConfig.name} ({currentUsage.aiAnalysesThisMonth}/{planConfig.maxAiAnalysesPerMonth} used)
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1 font-sans-ui">
@@ -61,14 +119,49 @@ export const AIContentAnalysisView: React.FC<AIContentAnalysisViewProps> = ({ pr
           </p>
         </div>
 
-        <button
-          onClick={onOpenWorkspace}
-          className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-4 py-2 rounded-lg border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
-        >
-          <FileText className="w-3.5 h-3.5" />
-          Back to Editor
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleRunAudit}
+            disabled={isRunningAudit}
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isRunningAudit ? 'animate-spin' : ''}`} />
+            {isRunningAudit ? 'Auditing...' : 'Run New Audit'}
+          </button>
+          <button
+            onClick={onOpenWorkspace}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-4 py-2 rounded-lg border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Back to Editor
+          </button>
+        </div>
       </div>
+
+      {/* Quota Exhausted Barrier if limit reached */}
+      {!limitCheck.allowed && (
+        <div className="bg-gradient-to-r from-rose-950/40 via-slate-900 to-amber-950/30 border border-rose-800/80 rounded-xl p-5 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-lg bg-rose-900/60 border border-rose-700 flex items-center justify-center text-rose-300 shrink-0">
+              <Lock className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-white">Monthly AI Analysis Quota Reached</h3>
+              <p className="text-xs text-slate-300 mt-0.5">
+                You have used <strong className="text-rose-300">{currentUsage.aiAnalysesThisMonth} of {planConfig.maxAiAnalysesPerMonth}</strong> AI analyses this month on the {planConfig.name} tier.
+                Upgrade to unlock 100 or 300 analyses/month with priority processing.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowUpgradeModal(true)}
+            className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-rose-600 hover:from-indigo-500 hover:to-rose-500 text-white font-semibold rounded-lg text-xs flex items-center gap-2 shrink-0 cursor-pointer shadow-md"
+          >
+            <CreditCard className="w-4 h-4" />
+            Upgrade Plan
+          </button>
+        </div>
+      )}
 
       {/* Mandatory Disclaimer Box */}
       <div className="bg-amber-950/30 border border-amber-800/60 rounded-xl p-4 flex items-start gap-3 text-xs text-amber-200">
@@ -110,7 +203,9 @@ export const AIContentAnalysisView: React.FC<AIContentAnalysisViewProps> = ({ pr
           <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
             Section-by-Section Stylometric Breakdown ({sectionAnalysis.length})
           </h3>
-          <span className="text-xs text-slate-500">Per-section variance assessment</span>
+          <span className="text-xs text-slate-500">
+            {lastAuditedAt ? `Audited at ${lastAuditedAt}` : 'Realtime assessment'}
+          </span>
         </div>
 
         <div className="divide-y divide-slate-800">
@@ -140,6 +235,22 @@ export const AIContentAnalysisView: React.FC<AIContentAnalysisViewProps> = ({ pr
           ))}
         </div>
       </div>
+
+      {/* Upgrade Modal */}
+      <UpgradeModal
+        isOpen={showUpgradeModal}
+        onClose={() => setShowUpgradeModal(false)}
+        reasonTitle="Upgrade for More AI Analyses"
+        reasonDescription={`You have used ${currentUsage.aiAnalysesThisMonth} of ${planConfig.maxAiAnalysesPerMonth} AI analyses on the ${planConfig.name} tier. Upgrade to Researcher (₹299/mo) for 100/mo or Pro Researcher (₹699/mo) for 300/mo.`}
+        targetPlan={currentPlan === 'FREE' ? 'RESEARCHER' : 'PRO_RESEARCHER'}
+        currentPlan={currentPlan}
+        userProfile={userProfile || null}
+        userId={userProfile?.id}
+        onPlanUpgraded={(newPlan) => {
+          if (onPlanUpgraded) onPlanUpgraded(newPlan);
+          setShowUpgradeModal(false);
+        }}
+      />
     </div>
   );
 };

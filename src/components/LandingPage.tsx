@@ -47,7 +47,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
   const faqs = [
     {
-      q: 'Does Research Manuscript Studio fabricate or invent experimental results?',
+      q: 'Does RePa fabricate or invent experimental results?',
       a: 'Absolutely not. The platform operates under a strict Non-Fabrication Guarantee. It converts your user-provided research facts, experimental numbers, measurements, and uploaded files into structured academic prose. Missing variables or missing controls are explicitly flagged for human author review.'
     },
     {
@@ -193,7 +193,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       <section id="how-it-works" className="py-16 px-4 sm:px-6 max-w-7xl mx-auto w-full">
         <div className="text-center max-w-3xl mx-auto mb-12">
           <h2 className="text-xs uppercase font-bold tracking-widest text-indigo-400 mb-2">Architectural Workflow</h2>
-          <h3 className="text-2xl sm:text-3xl font-serif-academic font-bold text-white">How Research Manuscript Studio Works</h3>
+          <h3 className="text-2xl sm:text-3xl font-serif-academic font-bold text-white">How RePa Works</h3>
           <p className="text-sm text-slate-400 mt-2 font-sans-ui">
             A rigorous 9-stage pipeline that preserves your experimental integrity while adapting to target publication standards.
           </p>
@@ -456,7 +456,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         <div className="max-w-4xl mx-auto space-y-4">
           <div className="flex items-center justify-center gap-2">
             <BookOpen className="w-5 h-5 text-indigo-400" />
-            <span className="font-serif font-bold text-base text-slate-200">Research Manuscript Studio</span>
+            <span className="font-serif font-bold text-base text-slate-200">RePa</span>
           </div>
           <p className="text-slate-400 max-w-xl mx-auto">
             A serious scientific preparation platform designed for researchers, postgraduate students, PhD scholars, and faculty.
@@ -469,7 +469,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <span className="text-slate-600">Built on Google AI Studio</span>
           </div>
           <p className="text-[11px] text-slate-600 pt-4">
-            © 2026 Research Manuscript Studio. All research rights and authorship remain strictly with the primary investigator.
+            © 2026 RePa. All research rights and authorship remain strictly with the primary investigator.
           </p>
         </div>
       </footer>

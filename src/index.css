@@ -3,14 +3,24 @@
 @layer base {
   :root {
     --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    --font-serif: 'Newsreader', Georgia, Cambria, 'Times New Roman', Times, serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    --font-serif: 'Newsreader', 'Times New Roman', Georgia, Cambria, serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace;
+    
+    /* High Density Architectural Palette */
+    --hd-bg: #E4E3E0;
+    --hd-ink: #141414;
+    --hd-surface: #FFFFFF;
+    --hd-surface-secondary: #F0EFED;
+    --hd-surface-tertiary: #E9E8E5;
+    --hd-border: #141414;
+    --hd-border-subtle: rgba(20, 20, 20, 0.15);
+    --hd-border-muted: rgba(20, 20, 20, 0.08);
   }
 
   body {
     font-family: var(--font-sans);
-    color: #111827;
-    background-color: #F3F4F6;
+    color: var(--hd-ink);
+    background-color: var(--hd-bg);
   }
 }
 
@@ -26,28 +36,95 @@
   font-family: var(--font-mono);
 }
 
-/* Minimalist Clean Paper Sheet Effect */
-.paper-sheet-shadow {
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+/* High Density Custom Elements & Shadows */
+.hd-canvas {
+  background-color: #E4E3E0;
+  color: #141414;
 }
 
-.minimal-card {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
+.hd-sheet {
+  background-color: #FFFFFF;
+  border: 1px solid rgba(20, 20, 20, 0.15);
+  box-shadow: 8px 8px 0px rgba(20, 20, 20, 0.06);
 }
 
-/* Custom crisp scrollbar */
+.hd-sheet-solid {
+  background-color: #FFFFFF;
+  border: 1px solid #141414;
+  box-shadow: 4px 4px 0px rgba(20, 20, 20, 0.9);
+}
+
+.hd-card {
+  background-color: #FFFFFF;
+  border: 1px solid rgba(20, 20, 20, 0.15);
+}
+
+.hd-card-header {
+  background-color: #141414;
+  color: #FFFFFF;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.hd-badge-solid {
+  background-color: #141414;
+  color: #FFFFFF;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 1px 4px;
+}
+
+.hd-badge-outline {
+  border: 1px solid rgba(20, 20, 20, 0.3);
+  color: #141414;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 1px 4px;
+}
+
+.hd-btn-primary {
+  background-color: #141414;
+  color: #FFFFFF;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  border: 1px solid #141414;
+  transition: all 0.15s ease-in-out;
+}
+
+.hd-btn-primary:hover {
+  background-color: #262626;
+  border-color: #262626;
+}
+
+.hd-btn-secondary {
+  background-color: #FFFFFF;
+  color: #141414;
+  font-weight: 600;
+  font-size: 11px;
+  border: 1px solid #141414;
+  transition: all 0.15s ease-in-out;
+}
+
+.hd-btn-secondary:hover {
+  background-color: #F0EFED;
+}
+
+/* High Density Crisp Scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #F0EFED;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db;
-  border-radius: 3px;
+  background: #141414;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
+  background: #333333;
 }
+

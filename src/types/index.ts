@@ -17,6 +17,7 @@ export type DocumentTypeKey =
   | 'custom_academic_document';
 
 export type FormatCategory = 'journal' | 'university' | 'institute' | 'department' | 'custom';
+export type SupportedCitationStyle = 'Vancouver' | 'APA' | 'IEEE';
 export type CitationStyleKey = 'APA' | 'Vancouver' | 'Harvard' | 'MLA' | 'Chicago' | 'IEEE' | 'AMA' | 'Custom';
 
 export type FileCategory =
@@ -763,6 +764,9 @@ export interface Project {
   references: ProjectReference[];
   projectReferences?: ProjectReference[];
   citations?: ManuscriptCitation[];
+  citationStyle?: SupportedCitationStyle | CitationStyleKey;
+  formattingProfileId?: string;
+  customFormattingProfile?: ManuscriptFormattingProfile;
   manuscript?: Manuscript;
   qualityReport?: QualityReport;
   similarityReport?: SimilarityReport;
@@ -786,6 +790,8 @@ export interface Manuscript {
   title: string;
   documentTypeId: DocumentTypeKey;
   formatId: string;
+  citationStyle?: SupportedCitationStyle | CitationStyleKey;
+  formattingProfileId?: string;
   abstract: string;
   keywords: string[];
   sections: ManuscriptSection[];
@@ -801,5 +807,106 @@ export interface GenerationStepProgress {
   label: string;
   status: 'pending' | 'in_progress' | 'completed' | 'error';
   details?: string;
+}
+
+// ----------------------------------------------------
+// Manuscript Formatting Profiles (Format / Template Engine)
+// ----------------------------------------------------
+
+export type FormattingProfileId =
+  | 'general_research_paper'
+  | 'masters_thesis'
+  | 'phd_thesis'
+  | string;
+
+export interface PageMarginSettings {
+  top: string; // e.g. "1.0 in"
+  bottom: string; // e.g. "1.0 in"
+  left: string; // e.g. "1.5 in" for binding gutter, or "1.0 in"
+  right: string; // e.g. "1.0 in"
+  gutter?: string;
+  label: string; // descriptive label e.g. "1.5 in Binding Left, 1.0 in Others"
+}
+
+export interface TypographySettings {
+  fontFamily: string; // e.g. "Times New Roman, Times, serif"
+  fontCategory: 'serif' | 'sans-serif';
+  baseFontSizePt: number; // e.g. 12
+  lineSpacing: '1.0' | '1.15' | '1.5' | '2.0';
+  lineSpacingLabel: string; // e.g. "1.5x Line Spacing", "Double Spaced"
+  paragraphSpacingPt: number; // Space after paragraph e.g. 0, 6, 12
+  paragraphIndent: string; // e.g. "0.5 in" or "0.0 in"
+  textAlign: 'left' | 'justify';
+}
+
+export interface HeadingLevelStyle {
+  fontSizePt: number;
+  fontWeight: string;
+  fontFamily?: string;
+  italic?: boolean;
+  textTransform?: 'uppercase' | 'none' | 'capitalize';
+  align: 'left' | 'center';
+  numberingStyle: 'arabic' | 'roman' | 'chapter' | 'none'; // e.g. "1. Introduction" vs "Chapter 1: ..."
+  spacingBeforePt: number;
+  spacingAfterPt: number;
+}
+
+export interface HeadingHierarchySettings {
+  h1: HeadingLevelStyle; // Chapter / Primary section
+  h2: HeadingLevelStyle; // Sub-section
+  h3: HeadingLevelStyle; // Sub-sub-section
+  h4?: HeadingLevelStyle; // Paragraph-level sub-heading
+}
+
+export interface TitleAuthorAreaSettings {
+  style: 'journal_banner' | 'thesis_cover_page' | 'compact_academic';
+  titleFontSizePt: number;
+  titleFontWeight: string;
+  authorLayout: 'byline_compact' | 'thesis_submission_block' | 'multiauthor_grid';
+  includeAbstractPage: boolean;
+  includeTableOfContents: boolean;
+  degreeStatement?: string;
+  departmentPlaceholder?: string;
+  institutionPlaceholder?: string;
+  showCommitteeBlock?: boolean;
+}
+
+export interface CaptionSettings {
+  figureCaptionStyle: 'below' | 'above';
+  figureLabelPrefix: string; // "Figure" or "Fig."
+  figureNumbering: 'sequential' | 'chapter_based'; // "1" vs "1.1"
+  tableCaptionStyle: 'above' | 'below';
+  tableLabelPrefix: string; // "Table" or "TABLE"
+  tableNumbering: 'sequential' | 'chapter_based'; // "1" vs "1.1"
+  fontSizePt: number;
+  italic: boolean;
+  boldLabel: boolean;
+  align: 'left' | 'center';
+}
+
+export interface ReferenceListFormattingSettings {
+  title: string; // "References", "Bibliography", "Works Cited"
+  hangingIndent: string; // e.g. "0.5 in"
+  lineSpacing: '1.0' | '1.5' | '2.0';
+  spacingBetweenEntriesPt: number;
+}
+
+export interface ManuscriptFormattingProfile {
+  id: FormattingProfileId;
+  name: string;
+  shortName: string;
+  description: string;
+  category: 'General' | 'Thesis' | 'Dissertation' | 'Journal' | 'University';
+  badge: string;
+  iconName?: string;
+  pageMargins: PageMarginSettings;
+  typography: TypographySettings;
+  headingHierarchy: HeadingHierarchySettings;
+  titleAuthorArea: TitleAuthorAreaSettings;
+  captions: CaptionSettings;
+  citationStyle: SupportedCitationStyle;
+  referenceListSettings: ReferenceListFormattingSettings;
+  isCustomizable?: boolean;
+  notes?: string;
 }
 

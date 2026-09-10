@@ -290,3 +290,5 @@ export async function exportManuscript(project: Project): Promise<void> {
   window.URL.revokeObjectURL(url);
   a.remove();
 }
+
+export { exportManuscriptToDocx, exportManuscriptToPdf } from './manuscriptExporter';

@@ -1,6 +1,6 @@
 {
-  "name": "Research Manuscript Studio",
-  "description": "A serious academic manuscript preparation platform transforming research data, findings, tables, and figures into structured journal and thesis manuscripts with strict fact traceability.",
+  "name": "RePa",
+  "description": "RePa research paper assistant with verified fact preservation, literature reference library, and Vancouver, APA, and IEEE citation and reference formatting.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

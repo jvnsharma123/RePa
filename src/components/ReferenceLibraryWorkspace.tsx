@@ -33,7 +33,8 @@ import {
   ReferenceVerificationStatus,
   ReferenceAuthor,
   ReferenceImportBatchResult,
-  PublicationType
+  PublicationType,
+  SupportedCitationStyle
 } from '../types';
 import { ManualReferenceModal } from './ManualReferenceModal';
 import { DoiLookupModal } from './DoiLookupModal';
@@ -41,11 +42,18 @@ import { ReferenceFileImportModal } from './ReferenceFileImportModal';
 import { PdfReferenceExtractorModal } from './PdfReferenceExtractorModal';
 import { ReferenceImportPreviewModal } from './ReferenceImportPreviewModal';
 import { ReferenceVerificationModal } from './ReferenceVerificationModal';
+import { CitationStyleSelector } from './CitationStyleSelector';
+import { ManuscriptReferencesSection } from './ManuscriptReferencesSection';
 import { CrossrefProvider } from '../services/referenceProviders';
 import {
   determineTrustLevel,
   evaluateMetadataCompleteness
 } from '../services/referenceVerificationService';
+import {
+  formatInTextCitation,
+  formatReferenceEntry,
+  extractCitedReferences
+} from '../services/citationFormatter';
 import {
   deleteProjectReference,
   updateReferenceVerificationStatus,
@@ -53,12 +61,18 @@ import {
   normalizeDoi,
   detectDuplicateReference
 } from '../services/supabaseData';
+import { PlanTier, PLAN_CONFIGS } from '../types/subscription';
+import { UpgradeModal } from './UpgradeModal';
 
 interface ReferenceLibraryWorkspaceProps {
   project: Project;
   onUpdateProject: (updated: Project) => void;
   userId?: string;
   onInsertReferenceToEditor?: (citationKey: string) => void;
+  onInsertCitation?: (selectedReferences: ProjectReference[]) => void;
+  currentPlan?: PlanTier;
+  onPlanUpgraded?: (plan: PlanTier) => void;
+  onNavigateToPricing?: () => void;
 }
 
 export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps> = ({
@@ -66,8 +80,25 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
   onUpdateProject,
   userId = 'default_user',
   onInsertReferenceToEditor,
+  onInsertCitation,
+  currentPlan = 'FREE',
+  onPlanUpgraded,
+  onNavigateToPricing,
 }) => {
   const references = project.references || [];
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+
+  const checkCanAddReference = (): boolean => {
+    const maxRefs = PLAN_CONFIGS[currentPlan].maxReferencesPerProject;
+    if (references.length >= maxRefs) {
+      setShowUpgradeModal(true);
+      return false;
+    }
+    return true;
+  };
+
+  // Multi-selection state for basic citation insertion
+  const [selectedRefIds, setSelectedRefIds] = useState<string[]>([]);
 
   // Search & Filter state
   const [searchQuery, setSearchQuery] = useState('');
@@ -122,6 +153,32 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
   const conflictCount = references.filter((r) => r.verificationStatus === 'CONFLICT').length;
   const incompleteCount = references.filter((r) => r.verificationStatus === 'METADATA_INCOMPLETE').length;
   const rejectedCount = references.filter((r) => r.verificationStatus === 'REJECTED').length;
+
+  // Citation Style (Vancouver, APA, IEEE)
+  const activeCitationStyle: SupportedCitationStyle =
+    (project.citationStyle as SupportedCitationStyle) ||
+    (project.manuscript?.citationStyle as SupportedCitationStyle) ||
+    'APA';
+
+  const handleCitationStyleChange = (newStyle: SupportedCitationStyle) => {
+    onUpdateProject({
+      ...project,
+      citationStyle: newStyle,
+      manuscript: project.manuscript
+        ? {
+            ...project.manuscript,
+            citationStyle: newStyle,
+            lastSaved: new Date().toISOString(),
+          }
+        : undefined,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const { refToOrderMap } = useMemo(
+    () => extractCitedReferences(project),
+    [project]
+  );
 
   // Filter & Sort references
   const filteredReferences = useMemo(() => {
@@ -454,192 +511,240 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
     setTimeout(() => setCopiedKeyId(null), 2000);
   };
 
+  // --------------------------------------------------------------------------
+  // Selection & Citation Insertion Handlers
+  // --------------------------------------------------------------------------
+  const handleToggleSelectRef = (refId: string) => {
+    setSelectedRefIds((prev) =>
+      prev.includes(refId) ? prev.filter((id) => id !== refId) : [...prev, refId]
+    );
+  };
+
+  const handleSelectAll = () => {
+    if (selectedRefIds.length === filteredReferences.length && filteredReferences.length > 0) {
+      setSelectedRefIds([]);
+    } else {
+      setSelectedRefIds(filteredReferences.map((r) => r.id));
+    }
+  };
+
+  const handleInsertSelectedCitations = () => {
+    const selectedRefs = references.filter((r) => selectedRefIds.includes(r.id));
+    if (selectedRefs.length === 0) return;
+
+    if (onInsertCitation) {
+      onInsertCitation(selectedRefs);
+    } else if (onInsertReferenceToEditor) {
+      const keys = selectedRefs.map((r) => r.citationKey || r.id).join('; ');
+      onInsertReferenceToEditor(keys);
+    }
+    setSelectedRefIds([]);
+  };
+
+  const handleSingleCite = (ref: ProjectReference) => {
+    if (onInsertCitation) {
+      onInsertCitation([ref]);
+    } else if (onInsertReferenceToEditor) {
+      onInsertReferenceToEditor(ref.citationKey || ref.id);
+    }
+  };
+
   return (
-    <div className="space-y-6">
-      {/* Top Banner / Header Card */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-xs">
+    <div className="space-y-4">
+      {/* Top Banner / Header Card - High Density */}
+      <div className="bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_rgba(20,20,20,0.06)]">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-gray-900 text-white flex items-center justify-center font-bold text-xs">
+              <div className="w-7 h-7 bg-[#141414] text-white flex items-center justify-center font-bold text-xs font-mono">
                 <BookOpen className="w-4 h-4" />
               </div>
-              <h2 className="text-xl font-bold text-gray-900 font-serif-academic">
+              <h2 className="text-lg font-bold text-[#141414] font-serif-academic">
                 Project Reference Library
               </h2>
-              <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded bg-blue-50 text-blue-700 border border-blue-200">
-                Phase 4.2A Ingestion
+              <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-[#141414] text-white font-mono">
+                Ingestion & Citations
               </span>
             </div>
-            <p className="text-xs text-gray-500 max-w-2xl font-sans">
+            <p className="text-xs text-[#555] max-w-2xl font-sans-ui">
               Authoritative, project-scoped literature library. Ingest references via DOI enrichment, BibTeX, RIS, or PDF extraction with strict zero-hallucination standards.
             </p>
           </div>
 
-          {/* Ingestion Actions Dropdown */}
-          <div className="relative" ref={addMenuRef}>
-            <button
-              onClick={() => setIsAddMenuOpen(!isAddMenuOpen)}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4" /> Ingest Reference
-              <ChevronDown className="w-3.5 h-3.5" />
-            </button>
+          {/* Ingestion Actions & Style Selector */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <CitationStyleSelector
+              currentStyle={activeCitationStyle}
+              onStyleChange={handleCitationStyleChange}
+            />
+
+            <div className="relative" ref={addMenuRef}>
+              <button
+                onClick={() => setIsAddMenuOpen(!isAddMenuOpen)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-[#141414] hover:bg-[#2A2A2A] text-white text-xs font-bold transition-colors cursor-pointer font-mono"
+              >
+                <Plus className="w-4 h-4" /> Ingest Reference
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
 
             {isAddMenuOpen && (
-              <div className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-gray-200 py-1.5 z-30 animate-in fade-in zoom-in-95 duration-100">
+              <div className="absolute right-0 mt-1 w-64 bg-white border border-[#141414] py-1 z-30 shadow-[4px_4px_0px_rgba(20,20,20,0.15)]">
                 <button
                   onClick={() => {
                     setIsAddMenuOpen(false);
+                    if (!checkCanAddReference()) return;
                     setIsDoiModalOpen(true);
                   }}
-                  className="w-full text-left px-4 py-2.5 text-xs text-gray-800 hover:bg-blue-50 flex items-center gap-2.5 transition-colors"
+                  className="w-full text-left px-3 py-2 text-xs text-[#141414] hover:bg-[#E9E8E5] flex items-center gap-2.5 transition-colors border-b border-[#141414]/10"
                 >
-                  <div className="w-7 h-7 rounded bg-teal-100 text-teal-800 flex items-center justify-center shrink-0">
-                    <Search className="w-4 h-4" />
+                  <div className="w-6 h-6 bg-[#141414] text-white flex items-center justify-center shrink-0">
+                    <Search className="w-3.5 h-3.5" />
                   </div>
                   <div>
-                    <div className="font-semibold">Lookup by DOI / PMID</div>
-                    <div className="text-[10px] text-gray-500">Auto-enrich from Crossref / PubMed</div>
+                    <div className="font-bold">Lookup by DOI / PMID</div>
+                    <div className="text-[10px] text-[#666]">Auto-enrich from Crossref / PubMed</div>
                   </div>
                 </button>
 
                 <button
                   onClick={() => {
                     setIsAddMenuOpen(false);
+                    if (!checkCanAddReference()) return;
                     setFileImportFormat('bibtex');
                     setIsFileImportModalOpen(true);
                   }}
-                  className="w-full text-left px-4 py-2.5 text-xs text-gray-800 hover:bg-purple-50 flex items-center gap-2.5 transition-colors"
+                  className="w-full text-left px-3 py-2 text-xs text-[#141414] hover:bg-[#E9E8E5] flex items-center gap-2.5 transition-colors border-b border-[#141414]/10"
                 >
-                  <div className="w-7 h-7 rounded bg-purple-100 text-purple-800 flex items-center justify-center shrink-0">
-                    <FileCode className="w-4 h-4" />
+                  <div className="w-6 h-6 bg-[#141414] text-white flex items-center justify-center shrink-0">
+                    <FileCode className="w-3.5 h-3.5" />
                   </div>
                   <div>
-                    <div className="font-semibold">Import BibTeX (.bib)</div>
-                    <div className="text-[10px] text-gray-500">Batch parse from LaTeX / Overleaf</div>
+                    <div className="font-bold">Import BibTeX (.bib)</div>
+                    <div className="text-[10px] text-[#666]">Batch parse from LaTeX / Overleaf</div>
                   </div>
                 </button>
 
                 <button
                   onClick={() => {
                     setIsAddMenuOpen(false);
+                    if (!checkCanAddReference()) return;
                     setFileImportFormat('ris');
                     setIsFileImportModalOpen(true);
                   }}
-                  className="w-full text-left px-4 py-2.5 text-xs text-gray-800 hover:bg-indigo-50 flex items-center gap-2.5 transition-colors"
+                  className="w-full text-left px-3 py-2 text-xs text-[#141414] hover:bg-[#E9E8E5] flex items-center gap-2.5 transition-colors border-b border-[#141414]/10"
                 >
-                  <div className="w-7 h-7 rounded bg-indigo-100 text-indigo-800 flex items-center justify-center shrink-0">
-                    <FileText className="w-4 h-4" />
+                  <div className="w-6 h-6 bg-[#141414] text-white flex items-center justify-center shrink-0">
+                    <FileText className="w-3.5 h-3.5" />
                   </div>
                   <div>
-                    <div className="font-semibold">Import RIS (.ris)</div>
-                    <div className="text-[10px] text-gray-500">Zotero, Mendeley, EndNote files</div>
+                    <div className="font-bold">Import RIS (.ris)</div>
+                    <div className="text-[10px] text-[#666]">Zotero, Mendeley, EndNote files</div>
                   </div>
                 </button>
 
                 <button
                   onClick={() => {
                     setIsAddMenuOpen(false);
+                    if (!checkCanAddReference()) return;
                     setIsPdfModalOpen(true);
                   }}
-                  className="w-full text-left px-4 py-2.5 text-xs text-gray-800 hover:bg-amber-50 flex items-center gap-2.5 transition-colors"
+                  className="w-full text-left px-3 py-2 text-xs text-[#141414] hover:bg-[#E9E8E5] flex items-center gap-2.5 transition-colors border-b border-[#141414]/10"
                 >
-                  <div className="w-7 h-7 rounded bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
-                    <Sparkles className="w-4 h-4" />
+                  <div className="w-6 h-6 bg-[#141414] text-white flex items-center justify-center shrink-0">
+                    <Sparkles className="w-3.5 h-3.5" />
                   </div>
                   <div>
-                    <div className="font-semibold">Extract from PDF</div>
-                    <div className="text-[10px] text-gray-500">Extract draft metadata from paper</div>
+                    <div className="font-bold">Extract from PDF</div>
+                    <div className="text-[10px] text-[#666]">Extract draft metadata from paper</div>
                   </div>
                 </button>
-
-                <div className="border-t border-gray-100 my-1"></div>
 
                 <button
                   onClick={() => {
                     setIsAddMenuOpen(false);
+                    if (!checkCanAddReference()) return;
                     setEditingReference(null);
                     setIsManualModalOpen(true);
                   }}
-                  className="w-full text-left px-4 py-2 text-xs text-gray-800 hover:bg-gray-100 flex items-center gap-2.5 transition-colors"
+                  className="w-full text-left px-3 py-2 text-xs text-[#141414] hover:bg-[#E9E8E5] flex items-center gap-2.5 transition-colors"
                 >
-                  <div className="w-7 h-7 rounded bg-gray-100 text-gray-800 flex items-center justify-center shrink-0">
+                  <div className="w-6 h-6 bg-[#141414] text-white flex items-center justify-center shrink-0">
                     <Edit3 className="w-3.5 h-3.5" />
                   </div>
                   <div>
-                    <div className="font-semibold">Manual Reference Entry</div>
-                    <div className="text-[10px] text-gray-500">Fill in full bibliographic fields</div>
+                    <div className="font-bold">Manual Reference Entry</div>
+                    <div className="text-[10px] text-[#666]">Fill in full bibliographic fields</div>
                   </div>
                 </button>
               </div>
             )}
+            </div>
           </div>
         </div>
 
-        {/* Statistics Pills */}
-        <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 mt-6 pt-6 border-t border-gray-100">
-          <div className="bg-gray-50/70 border border-gray-200/80 rounded-lg p-3">
-            <div className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">
+        {/* Statistics Pills - High Density Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 mt-4 pt-4 border-t border-[#141414]">
+          <div className="bg-[#FAF9F7] border border-[#141414] p-2.5">
+            <div className="text-[10px] font-bold text-[#555] uppercase tracking-wide font-mono">
               Total
             </div>
-            <div className="text-xl font-bold text-gray-900 mt-0.5">{totalCount}</div>
+            <div className="text-lg font-bold text-[#141414] mt-0.5 font-mono">{totalCount}</div>
           </div>
 
-          <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-lg p-3">
-            <div className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wide flex items-center gap-1">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+          <div className="bg-emerald-50 border border-emerald-800 p-2.5">
+            <div className="text-[10px] font-bold text-emerald-900 uppercase tracking-wide flex items-center gap-1 font-mono">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" />
               Verified (L1)
             </div>
-            <div className="text-xl font-bold text-emerald-950 mt-0.5">{verifiedCount}</div>
+            <div className="text-lg font-bold text-emerald-950 mt-0.5 font-mono">{verifiedCount}</div>
           </div>
 
-          <div className="bg-blue-50/60 border border-blue-200/80 rounded-lg p-3">
-            <div className="text-[11px] font-semibold text-blue-800 uppercase tracking-wide flex items-center gap-1">
-              <RefreshCw className="w-3.5 h-3.5 text-blue-600" />
+          <div className="bg-blue-50 border border-blue-800 p-2.5">
+            <div className="text-[10px] font-bold text-blue-900 uppercase tracking-wide flex items-center gap-1 font-mono">
+              <RefreshCw className="w-3.5 h-3.5 text-blue-700" />
               Review / Pending
             </div>
-            <div className="text-xl font-bold text-blue-950 mt-0.5">{underReviewCount + pendingCount}</div>
+            <div className="text-lg font-bold text-blue-950 mt-0.5 font-mono">{underReviewCount + pendingCount}</div>
           </div>
 
-          <div className="bg-rose-50/60 border border-rose-200/80 rounded-lg p-3">
-            <div className="text-[11px] font-semibold text-rose-800 uppercase tracking-wide flex items-center gap-1">
-              <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+          <div className="bg-rose-50 border border-rose-800 p-2.5">
+            <div className="text-[10px] font-bold text-rose-900 uppercase tracking-wide flex items-center gap-1 font-mono">
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-700" />
               Conflicts
             </div>
-            <div className="text-xl font-bold text-rose-950 mt-0.5">{conflictCount}</div>
+            <div className="text-lg font-bold text-rose-950 mt-0.5 font-mono">{conflictCount}</div>
           </div>
 
-          <div className="bg-amber-50/60 border border-amber-200/80 rounded-lg p-3">
-            <div className="text-[11px] font-semibold text-amber-800 uppercase tracking-wide flex items-center gap-1">
-              <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+          <div className="bg-amber-50 border border-amber-800 p-2.5">
+            <div className="text-[10px] font-bold text-amber-900 uppercase tracking-wide flex items-center gap-1 font-mono">
+              <AlertCircle className="w-3.5 h-3.5 text-amber-700" />
               Needs Review
             </div>
-            <div className="text-xl font-bold text-amber-950 mt-0.5">{needsCorrectionCount + incompleteCount}</div>
+            <div className="text-lg font-bold text-amber-950 mt-0.5 font-mono">{needsCorrectionCount + incompleteCount}</div>
           </div>
 
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 col-span-2 sm:col-span-1">
-            <div className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide flex items-center gap-1">
-              <XCircle className="w-3.5 h-3.5 text-slate-500" />
+          <div className="bg-[#FAF9F7] border border-[#141414] p-2.5 col-span-2 sm:col-span-1">
+            <div className="text-[10px] font-bold text-[#555] uppercase tracking-wide flex items-center gap-1 font-mono">
+              <XCircle className="w-3.5 h-3.5 text-[#555]" />
               Rejected
             </div>
-            <div className="text-xl font-bold text-slate-800 mt-0.5">{rejectedCount}</div>
+            <div className="text-lg font-bold text-[#141414] mt-0.5 font-mono">{rejectedCount}</div>
           </div>
         </div>
       </div>
 
-      {/* Toolbar: Search, Filters, Sort */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs space-y-3">
+      {/* Toolbar: Search, Filters, Sort - High Density */}
+      <div className="bg-[#F0EFED] border border-[#141414] p-3 space-y-2.5">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           {/* Search Box */}
           <div className="relative flex-1">
-            <Search className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
+            <Search className="w-3.5 h-3.5 text-[#555] absolute left-3 top-2.5" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search by title, author, journal, DOI, citation key, notes..."
-              className="w-full pl-9 pr-3 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-black focus:border-black bg-white text-gray-900"
+              className="w-full pl-9 pr-3 py-1.5 text-xs bg-white border border-[#141414] text-[#141414] placeholder-[#777] focus:outline-none"
             />
           </div>
 
@@ -649,7 +754,7 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
             <select
               value={sourceFilter}
               onChange={(e) => setSourceFilter(e.target.value)}
-              className="px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white text-gray-700 font-medium focus:outline-hidden focus:ring-1 focus:ring-black"
+              className="px-2.5 py-1.5 text-xs bg-white border border-[#141414] text-[#141414] focus:outline-none font-mono"
             >
               <option value="ALL">All Sources</option>
               <option value="crossref">Crossref</option>
@@ -664,7 +769,7 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
             <select
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value)}
-              className="px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white text-gray-700 font-medium focus:outline-hidden focus:ring-1 focus:ring-black"
+              className="px-2.5 py-1.5 text-xs bg-white border border-[#141414] text-[#141414] focus:outline-none font-mono"
             >
               <option value="ALL">All Types</option>
               <option value="article">Journal Article</option>
@@ -681,7 +786,7 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white text-gray-700 font-medium focus:outline-hidden focus:ring-1 focus:ring-black"
+              className="px-2.5 py-1.5 text-xs bg-white border border-[#141414] text-[#141414] focus:outline-none font-mono"
             >
               <option value="year_desc">Year: Newest First</option>
               <option value="year_asc">Year: Oldest First</option>
@@ -692,7 +797,7 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
         </div>
 
         {/* Status Filter Tabs */}
-        <div className="flex items-center gap-1 overflow-x-auto pt-1 border-t border-gray-100">
+        <div className="flex items-center gap-1 overflow-x-auto pt-1 border-t border-[#141414]/20">
           {(
             [
               { key: 'ALL', label: 'All References', count: totalCount },
@@ -708,18 +813,18 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
             <button
               key={tab.key}
               onClick={() => setStatusFilter(tab.key)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
+              className={`px-2.5 py-1 text-xs font-bold transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer font-mono ${
                 statusFilter === tab.key
-                  ? 'bg-black text-white'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                  ? 'bg-[#141414] text-white'
+                  : 'bg-white text-[#141414] border border-[#141414]/30 hover:bg-[#E9E8E5]'
               }`}
             >
               {tab.label}
               <span
-                className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                className={`text-[9px] px-1 py-0.2 font-mono ${
                   statusFilter === tab.key
                     ? 'bg-white/20 text-white'
-                    : 'bg-gray-100 text-gray-600'
+                    : 'bg-[#E4E3E0] text-[#141414]'
                 }`}
               >
                 {tab.count}
@@ -728,6 +833,71 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
           ))}
         </div>
       </div>
+
+      {/* Selected Items Citation Banner - High Density */}
+      {selectedRefIds.length > 0 && (
+        <div className="bg-[#141414] border border-[#141414] p-3 sm:px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-white">
+          <div className="flex items-center gap-3">
+            <div className="w-6 h-6 bg-white text-[#141414] flex items-center justify-center font-bold text-xs font-mono shrink-0">
+              {selectedRefIds.length}
+            </div>
+            <div>
+              <p className="text-xs font-bold text-white font-mono">
+                {selectedRefIds.length} Reference{selectedRefIds.length > 1 ? 's' : ''} Selected
+              </p>
+              <p className="text-[11px] text-gray-300">
+                Click &quot;Insert Citation&quot; to place standard in-text reference citations at your active manuscript cursor position.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-end sm:self-center">
+            <button
+              onClick={() => setSelectedRefIds([])}
+              className="px-3 py-1.5 text-xs text-gray-300 hover:text-white border border-gray-600 hover:bg-[#2A2A2A] transition-colors cursor-pointer font-mono"
+            >
+              Deselect All
+            </button>
+
+            {(onInsertCitation || onInsertReferenceToEditor) && (
+              <button
+                id="btn-insert-selected-citations"
+                onClick={handleInsertSelectedCitations}
+                className="px-3 py-1.5 bg-white hover:bg-[#E9E8E5] text-[#141414] text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer font-mono"
+              >
+                <Bookmark className="w-3.5 h-3.5" />
+                Insert Citation ({selectedRefIds.length})
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Select All Bar when references exist */}
+      {filteredReferences.length > 0 && (
+        <div className="flex items-center justify-between px-1 text-xs text-[#141414] font-mono">
+          <label className="flex items-center gap-2 cursor-pointer select-none font-bold hover:text-black transition-colors">
+            <input
+              type="checkbox"
+              checked={
+                filteredReferences.length > 0 &&
+                selectedRefIds.length >= filteredReferences.length &&
+                filteredReferences.every((r) => selectedRefIds.includes(r.id))
+              }
+              onChange={handleSelectAll}
+              className="w-4 h-4 text-[#141414] rounded-none border-[#141414] focus:ring-0 cursor-pointer"
+            />
+            <span>
+              Select All ({filteredReferences.length} reference{filteredReferences.length > 1 ? 's' : ''})
+            </span>
+          </label>
+          {selectedRefIds.length > 0 && (
+            <span className="text-[10px] font-bold text-[#141414] bg-white border border-[#141414] px-1.5 py-0.5">
+              {selectedRefIds.length} chosen
+            </span>
+          )}
+        </div>
+      )}
 
       {/* References List */}
       <div className="space-y-3">
@@ -781,6 +951,7 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
         ) : (
           filteredReferences.map((ref) => {
             const isExpanded = expandedRefId === ref.id;
+            const isSelected = selectedRefIds.includes(ref.id);
             const duplicateCheck = detectDuplicateReference(ref, references, ref.id);
             const trustInfo = determineTrustLevel(ref);
 
@@ -788,7 +959,9 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
               <div
                 key={ref.id}
                 className={`bg-white rounded-xl border transition-all p-5 shadow-xs space-y-3 ${
-                  ref.verificationStatus === 'CONFLICT'
+                  isSelected
+                    ? 'border-indigo-500 ring-2 ring-indigo-500/20 bg-indigo-50/10'
+                    : ref.verificationStatus === 'CONFLICT'
                     ? 'border-rose-300 ring-1 ring-rose-200'
                     : ref.verificationStatus === 'NEEDS_CORRECTION'
                     ? 'border-amber-300'
@@ -845,53 +1018,94 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
 
                 {/* Main Card Header */}
                 <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                  <div className="space-y-1.5 flex-1">
-                    {/* Authors & Year & Source Badges & Trust Badge */}
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600 font-sans">
-                      <span className="font-semibold text-gray-900">
-                        {formatAuthors(ref.authors)}
-                      </span>
-                      {ref.publicationYear && (
-                        <span className="text-gray-500 font-mono">
-                          ({ref.publicationYear})
-                        </span>
-                      )}
-                      {renderSourceBadge(ref)}
-                      
-                      {/* Trust Hierarchy Badge */}
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${trustInfo.badgeColor}`}
-                        title={trustInfo.description}
-                      >
-                        L{trustInfo.level}: {trustInfo.label}
-                      </span>
-
-                      {ref.publicationType && (
-                        <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded text-[10px] uppercase font-mono">
-                          {ref.publicationType}
-                        </span>
-                      )}
+                  <div className="flex items-start gap-3 flex-1">
+                    {/* Checkbox for selecting reference */}
+                    <div className="pt-0.5 shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectRef(ref.id)}
+                        className="w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 cursor-pointer"
+                        title="Select reference for manuscript citation insertion"
+                      />
                     </div>
 
-                    {/* Paper Title */}
-                    <h3 className="text-base font-bold text-gray-950 font-serif-academic leading-snug">
-                      {ref.title}
-                    </h3>
+                    <div className="space-y-1.5 flex-1">
+                      {/* Authors & Year & Source Badges & Trust Badge */}
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600 font-sans">
+                        <span className="font-semibold text-gray-900">
+                          {formatAuthors(ref.authors)}
+                        </span>
+                        {ref.publicationYear && (
+                          <span className="text-gray-500 font-mono">
+                            ({ref.publicationYear})
+                          </span>
+                        )}
+                        {renderSourceBadge(ref)}
+                        
+                        {/* Trust Hierarchy Badge */}
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${trustInfo.badgeColor}`}
+                          title={trustInfo.description}
+                        >
+                          L{trustInfo.level}: {trustInfo.label}
+                        </span>
 
-                    {/* Journal / Venue details */}
-                    {(ref.journal || ref.volume || ref.pages || ref.publisher) && (
-                      <p className="text-xs text-gray-600 font-serif-academic italic">
-                        {ref.journal}
-                        {ref.volume && <span className="font-semibold not-italic"> {ref.volume}</span>}
-                        {ref.issue && <span>({ref.issue})</span>}
-                        {ref.pages && <span>: {ref.pages}</span>}
-                        {ref.publisher && !ref.journal && <span>{ref.publisher}</span>}
-                      </p>
-                    )}
+                        {/* Live In-Text Citation Badge for selected Style */}
+                        {(() => {
+                          const orderNum = refToOrderMap.get(ref.id) || 1;
+                          const inTextPreview = formatInTextCitation([ref], activeCitationStyle, refToOrderMap);
+                          return (
+                            <span
+                              className="px-2 py-0.5 bg-[#141414] text-white text-[10px] font-mono font-bold"
+                              title={`Formatted in-text citation in ${activeCitationStyle} style`}
+                            >
+                              Cite: {inTextPreview}
+                            </span>
+                          );
+                        })()}
+
+                        {ref.publicationType && (
+                          <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded text-[10px] uppercase font-mono">
+                            {ref.publicationType}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Paper Title */}
+                      <h3 className="text-base font-bold text-gray-950 font-serif-academic leading-snug">
+                        {ref.title}
+                      </h3>
+
+                      {/* Journal / Venue details */}
+                      {(ref.journal || ref.volume || ref.pages || ref.publisher) && (
+                        <p className="text-xs text-gray-600 font-serif-academic italic">
+                          {ref.journal}
+                          {ref.volume && <span className="font-semibold not-italic"> {ref.volume}</span>}
+                          {ref.issue && <span>({ref.issue})</span>}
+                          {ref.pages && <span>: {ref.pages}</span>}
+                          {ref.publisher && !ref.journal && <span>{ref.publisher}</span>}
+                        </p>
+                      )}
+
+                      {/* Formatted Reference Entry Preview ({activeCitationStyle}) */}
+                      <div className="bg-[#F8F7F5] border border-[#141414]/15 p-2 text-xs text-[#222] font-serif-academic leading-relaxed mt-1">
+                        <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-[#666] block mb-0.5">
+                          {activeCitationStyle} Formatted Bibliography Entry:
+                        </span>
+                        <p className="italic text-[#141414]">
+                          {formatReferenceEntry(
+                            ref,
+                            activeCitationStyle,
+                            refToOrderMap.get(ref.id) || 1
+                          )}
+                        </p>
+                      </div>
+                    </div>
                   </div>
 
                   {/* Top Right Status & Action Pill */}
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-start">
                     {renderStatusBadge(ref.verificationStatus)}
 
                     {/* Primary Verify & Audit Workflow Button */}
@@ -908,11 +1122,11 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
                       {ref.verificationStatus === 'VERIFIED' ? 'Audit Details' : 'Verify & Audit'}
                     </button>
 
-                    {onInsertReferenceToEditor && (
+                    {(onInsertCitation || onInsertReferenceToEditor) && (
                       <button
-                        onClick={() => onInsertReferenceToEditor(ref.citationKey || ref.id)}
-                        className="px-2.5 py-1 text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors flex items-center gap-1 cursor-pointer"
-                        title="Insert Citation into Draft"
+                        onClick={() => handleSingleCite(ref)}
+                        className="px-2.5 py-1 text-xs font-semibold bg-gray-100 hover:bg-indigo-50 hover:text-indigo-700 text-gray-700 rounded-md transition-colors flex items-center gap-1 cursor-pointer"
+                        title="Insert Citation into active draft at cursor position"
                       >
                         <Bookmark className="w-3.5 h-3.5" /> Cite
                       </button>
@@ -1127,6 +1341,16 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
         )}
       </div>
 
+      {/* Manuscript References & Bibliography Section */}
+      <div className="pt-2">
+        <ManuscriptReferencesSection
+          project={project}
+          citationStyle={activeCitationStyle}
+          onCitationStyleChange={handleCitationStyleChange}
+          onNavigateToLiteratureLibrary={() => {}}
+        />
+      </div>
+
       {/* Reference Verification & Provenance Engine Modal */}
       {verifyingReference && (
         <ReferenceVerificationModal
@@ -1204,6 +1428,21 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
           projectId={project.id}
         />
       )}
+
+      {/* Upgrade Modal for Reference Limit */}
+      <UpgradeModal
+        isOpen={showUpgradeModal}
+        onClose={() => setShowUpgradeModal(false)}
+        reasonTitle="Reference Library Limit Reached"
+        reasonDescription={`The Free plan allows up to 20 literature references per project (you currently have ${references.length}). Upgrade to Researcher (₹299/mo) for unlimited references, automatic BibTeX/RIS ingestion, and full citation styling.`}
+        targetPlan="RESEARCHER"
+        currentPlan={currentPlan}
+        userId={userId}
+        onPlanUpgraded={(newPlan) => {
+          if (onPlanUpgraded) onPlanUpgraded(newPlan);
+          setShowUpgradeModal(false);
+        }}
+      />
     </div>
   );
 };

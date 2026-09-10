@@ -90,7 +90,8 @@ export async function fetchSingleProjectFromSupabase(
       manuscriptRes,
       versionsRes,
       qualityRes,
-      referencesRes
+      referencesRes,
+      citationsRes
     ] = await Promise.all([
       supabase.from('research_inputs').select('*').eq('project_id', projectId).maybeSingle(),
       supabase.from('research_files').select('*').eq('project_id', projectId).order('uploaded_at', { ascending: true }),
@@ -102,7 +103,8 @@ export async function fetchSingleProjectFromSupabase(
       supabase.from('manuscripts').select('*').eq('project_id', projectId).maybeSingle(),
       supabase.from('manuscript_versions').select('*').eq('project_id', projectId).order('version_number', { ascending: false }),
       supabase.from('quality_checks').select('*').eq('project_id', projectId).order('created_at', { ascending: false }).limit(1),
-      supabase.from('project_references').select('*').eq('project_id', projectId).order('created_at', { ascending: true })
+      supabase.from('project_references').select('*').eq('project_id', projectId).order('created_at', { ascending: true }),
+      supabase.from('manuscript_citations').select('*').eq('project_id', projectId).order('citation_order', { ascending: true })
     ]);
 
     const inputs = inputsRes.data || {};
@@ -346,6 +348,20 @@ export async function fetchSingleProjectFromSupabase(
       };
     });
 
+    // Map citations
+    const citations: ManuscriptCitation[] = (citationsRes.data || []).map((c: any) => ({
+      id: c.id,
+      projectId: c.project_id,
+      manuscriptId: c.manuscript_id,
+      sectionId: c.section_id,
+      referenceId: c.reference_id,
+      claimText: c.claim_text || undefined,
+      citationOrder: c.citation_order || 1,
+      inTextTag: c.in_text_tag || undefined,
+      userId: c.user_id,
+      createdAt: c.created_at,
+    }));
+
     return {
       id: projectRow.id,
       userId: projectRow.user_id,
@@ -377,6 +393,7 @@ export async function fetchSingleProjectFromSupabase(
       figures,
       tables,
       references,
+      citations,
       summary,
       plan,
       manuscript,
@@ -696,6 +713,26 @@ export async function saveProjectToSupabase(
 
       const { error: refsErr } = await supabase.from('project_references').upsert(refRows);
       if (refsErr) console.warn('Project references upsert warning:', refsErr);
+    }
+
+    // 13. Upsert manuscript_citations
+    if (project.citations && project.citations.length > 0) {
+      const msId = project.manuscript?.id || `ms_${project.id}`;
+      const citeRows = project.citations.map((c, idx) => ({
+        id: c.id || `cite_${project.id}_${idx}`,
+        project_id: project.id,
+        manuscript_id: c.manuscriptId || msId,
+        section_id: c.sectionId,
+        reference_id: c.referenceId,
+        claim_text: c.claimText || null,
+        citation_order: c.citationOrder || (idx + 1),
+        in_text_tag: c.inTextTag || null,
+        user_id: userId,
+        created_at: c.createdAt || now,
+      }));
+
+      const { error: citeErr } = await supabase.from('manuscript_citations').upsert(citeRows);
+      if (citeErr) console.warn('Manuscript citations upsert warning:', citeErr);
     }
 
     return { success: true, error: null };
@@ -1225,4 +1262,106 @@ export async function fetchReferenceVerificationEvents(
     return [];
   }
 }
+
+// ----------------------------------------------------------------------------
+// Phase 4.1: Manuscript Citations CRUD Operations
+// ----------------------------------------------------------------------------
+
+export async function fetchManuscriptCitations(projectId: string): Promise<ManuscriptCitation[]> {
+  if (!supabase || !isSupabaseConfigured) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('manuscript_citations')
+      .select('*')
+      .eq('project_id', projectId)
+      .order('citation_order', { ascending: true });
+
+    if (error || !data) return [];
+
+    return data.map((c: any) => ({
+      id: c.id,
+      projectId: c.project_id,
+      manuscriptId: c.manuscript_id,
+      sectionId: c.section_id,
+      referenceId: c.reference_id,
+      claimText: c.claim_text || undefined,
+      citationOrder: c.citation_order || 1,
+      inTextTag: c.in_text_tag || undefined,
+      userId: c.user_id,
+      createdAt: c.created_at,
+    }));
+  } catch (err) {
+    console.error('Failed to fetch manuscript citations:', err);
+    return [];
+  }
+}
+
+export async function saveManuscriptCitation(
+  citation: ManuscriptCitation,
+  userId: string
+): Promise<{ success: boolean; data?: ManuscriptCitation; error?: any }> {
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: true, data: citation };
+  }
+
+  try {
+    const row = {
+      id: citation.id,
+      project_id: citation.projectId,
+      manuscript_id: citation.manuscriptId,
+      section_id: citation.sectionId,
+      reference_id: citation.referenceId,
+      claim_text: citation.claimText || null,
+      citation_order: citation.citationOrder || 1,
+      in_text_tag: citation.inTextTag || null,
+      user_id: userId,
+      created_at: citation.createdAt || new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('manuscript_citations')
+      .upsert(row)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Failed to save manuscript citation:', error);
+      return { success: false, error };
+    }
+
+    return {
+      success: true,
+      data: {
+        ...citation,
+        id: data?.id || citation.id,
+      }
+    };
+  } catch (err: any) {
+    console.error('Exception in saveManuscriptCitation:', err);
+    return { success: false, error: err };
+  }
+}
+
+export async function deleteManuscriptCitation(
+  citationId: string,
+  userId: string
+): Promise<{ success: boolean; error?: any }> {
+  if (!supabase || !isSupabaseConfigured) return { success: true };
+
+  try {
+    const { error } = await supabase
+      .from('manuscript_citations')
+      .delete()
+      .eq('id', citationId)
+      .eq('user_id', userId);
+
+    if (error) throw error;
+    return { success: true };
+  } catch (err: any) {
+    console.error('Failed to delete manuscript citation:', err);
+    return { success: false, error: err };
+  }
+}
+
 

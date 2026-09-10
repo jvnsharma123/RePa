@@ -38,7 +38,7 @@ export const FactProtectionModal: React.FC<FactProtectionModalProps> = ({ isOpen
             <strong className="text-emerald-950 block mb-1 text-xs font-semibold">
               The Platform Is an Academic Assistant, Not a Hallucination Engine
             </strong>
-            Research Manuscript Studio is strictly engineered to structure, format, and synthesize your actual research inputs. It is explicitly constrained from inventing experimental numbers, statistical p-values, sample sizes, laboratory conditions, or fabricated citations.
+            RePa is strictly engineered to structure, format, and synthesize your actual research inputs. It is explicitly constrained from inventing experimental numbers, statistical p-values, sample sizes, laboratory conditions, or fabricated citations.
           </div>
 
           <div>

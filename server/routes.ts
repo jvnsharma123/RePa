@@ -17,6 +17,21 @@ import {
   generateTableCaptionWithAI,
   extractReferenceFromPdfWithAI,
 } from './geminiService';
+import {
+  createCheckoutSession,
+  verifyPaymentAndActivate,
+  handleRazorpayWebhook,
+  cancelUserSubscription,
+  isRazorpayConfigured,
+  RAZORPAY_KEY_ID,
+  PLAN_PRICING,
+  SupportedPlan,
+} from './razorpayService';
+import {
+  getUserSubscriptionDetails,
+  recordUsageEvent,
+  getMonthlyUsageCounts,
+} from './supabaseAdmin';
 
 export const apiRouter = Router();
 
@@ -918,5 +933,155 @@ Datasets & Tables Referenced: ${(project.files || []).length}
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${project.title.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 30)}_Manuscript.txt"`);
   res.send(exportText);
+});
+
+// ==============================================================================
+// RAZORPAY SUBSCRIPTION & USAGE API ROUTES
+// ==============================================================================
+
+/**
+ * Public subscription configuration endpoint
+ */
+apiRouter.get('/subscription/config', (req, res) => {
+  res.json({
+    isConfigured: isRazorpayConfigured,
+    keyId: RAZORPAY_KEY_ID || null,
+    isTestMode: !isRazorpayConfigured || RAZORPAY_KEY_ID.startsWith('rzp_test_'),
+    plans: PLAN_PRICING,
+  });
+});
+
+/**
+ * Create a subscription checkout session for Researcher or Pro Researcher
+ */
+apiRouter.post('/subscription/create', async (req, res) => {
+  try {
+    const { planTier, userId, userEmail, userName } = req.body;
+    if (!planTier || (planTier !== 'RESEARCHER' && planTier !== 'PRO_RESEARCHER')) {
+      return res.status(400).json({ error: 'Valid planTier (RESEARCHER or PRO_RESEARCHER) is required.' });
+    }
+
+    const session = await createCheckoutSession({
+      planTier: planTier as SupportedPlan,
+      userId: userId || 'usr_anonymous',
+      userEmail,
+      userName,
+    });
+
+    res.json(session);
+  } catch (err: any) {
+    console.error('Failed to create subscription checkout session:', err);
+    res.status(500).json({ error: err.message || 'Failed to initialize subscription checkout' });
+  }
+});
+
+/**
+ * Verify payment signature and activate subscription
+ */
+apiRouter.post('/subscription/verify', async (req, res) => {
+  try {
+    const {
+      userId,
+      planTier,
+      razorpayPaymentId,
+      razorpaySubscriptionId,
+      razorpayOrderId,
+      razorpaySignature,
+      isTestSimulation,
+    } = req.body;
+
+    if (!userId || !planTier || !razorpayPaymentId) {
+      return res.status(400).json({ error: 'Missing required parameters for verification' });
+    }
+
+    const verificationResult = await verifyPaymentAndActivate({
+      userId,
+      planTier: planTier as SupportedPlan,
+      razorpayPaymentId,
+      razorpaySubscriptionId,
+      razorpayOrderId,
+      razorpaySignature,
+      isTestSimulation: Boolean(isTestSimulation),
+    });
+
+    if (!verificationResult.success) {
+      return res.status(400).json(verificationResult);
+    }
+
+    res.json(verificationResult);
+  } catch (err: any) {
+    console.error('Error verifying subscription payment:', err);
+    res.status(500).json({ error: err.message || 'Payment verification failed' });
+  }
+});
+
+/**
+ * Razorpay Webhook listener for subscription events
+ */
+apiRouter.post('/subscription/webhook', async (req: any, res) => {
+  try {
+    const signature = req.headers['x-razorpay-signature'] as string;
+    const rawBody = req.rawBody || JSON.stringify(req.body);
+
+    const result = await handleRazorpayWebhook(rawBody, signature || '');
+    res.json(result);
+  } catch (err: any) {
+    console.error('Webhook processing error:', err);
+    res.status(400).json({ error: err.message || 'Webhook verification failed' });
+  }
+});
+
+/**
+ * Fetch current user subscription status and monthly usage
+ */
+apiRouter.get('/subscription/status', async (req, res) => {
+  try {
+    const userId = (req.query.userId as string) || 'default_user';
+    const [subDetails, usageCounts] = await Promise.all([
+      getUserSubscriptionDetails(userId),
+      getMonthlyUsageCounts(userId),
+    ]);
+
+    res.json({
+      ...subDetails,
+      usage: usageCounts,
+    });
+  } catch (err: any) {
+    console.error('Error fetching subscription status:', err);
+    res.status(500).json({ error: err.message || 'Failed to fetch subscription status' });
+  }
+});
+
+/**
+ * Cancel user subscription and downgrade
+ */
+apiRouter.post('/subscription/cancel', async (req, res) => {
+  try {
+    const { userId, subscriptionId } = req.body;
+    if (!userId || !subscriptionId) {
+      return res.status(400).json({ error: 'userId and subscriptionId are required' });
+    }
+
+    const result = await cancelUserSubscription(userId, subscriptionId);
+    res.json(result);
+  } catch (err: any) {
+    console.error('Failed to cancel subscription:', err);
+    res.status(500).json({ error: err.message || 'Failed to cancel subscription' });
+  }
+});
+
+/**
+ * Track an action usage (ai_analysis or export)
+ */
+apiRouter.post('/usage/record', async (req, res) => {
+  try {
+    const { userId, actionType, metadata } = req.body;
+    if (userId && (actionType === 'ai_analysis' || actionType === 'export')) {
+      await recordUsageEvent(userId, actionType, metadata);
+    }
+    res.json({ recorded: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to record usage' });
+  }
 });
 

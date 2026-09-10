@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import {
   FileText,
   ShieldCheck,
@@ -31,7 +31,8 @@ import {
   ArrowRight,
   ExternalLink,
   Table as TableIcon,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Bookmark
 } from 'lucide-react';
 import {
   Project,
@@ -44,12 +45,24 @@ import {
   ManuscriptPlan,
   PlanSectionItem,
   ParagraphProvenance,
-  MissingInfoItem
+  MissingInfoItem,
+  ProjectReference,
+  ManuscriptCitation,
+  SupportedCitationStyle,
+  FormattingProfileId,
+  ManuscriptFormattingProfile
 } from '../types';
 import { FORMAT_SPECIFICATIONS, DOCUMENT_TYPE_OPTIONS } from '../data/catalog';
 import {
+  DEFAULT_FORMATTING_PROFILES,
+  getFormattingProfileById,
+  resolveProjectFormattingProfile
+} from '../data/formattingProfiles';
+import {
   runAssistantAction,
   exportManuscript,
+  exportManuscriptToDocx,
+  exportManuscriptToPdf,
   analyzeResearchFile,
   createManuscriptVersion,
   generateAcademicSection,
@@ -59,6 +72,7 @@ import {
 import { AutosaveIndicator } from './AutosaveIndicator';
 import { AutosaveStatus } from '../hooks/useAutosave';
 import { uploadResearchFileToSupabase } from '../services/supabase';
+import { saveManuscriptCitation } from '../services/supabaseData';
 import { ResearchAnalysisWorkspace } from './ResearchAnalysisWorkspace';
 import { FactVerificationView } from './FactVerificationView';
 import { TitleGeneratorModal } from './TitleGeneratorModal';
@@ -68,6 +82,20 @@ import { MissingInformationScanner } from './MissingInformationScanner';
 import { FiguresAndTablesWorkspace } from './FiguresAndTablesWorkspace';
 import { ReferenceLibraryWorkspace } from './ReferenceLibraryWorkspace';
 import { ConflictWarningBanner } from './ConflictWarningBanner';
+import { CitationStyleSelector } from './CitationStyleSelector';
+import { ManuscriptReferencesSection } from './ManuscriptReferencesSection';
+import { FormatProfileSelector } from './FormatProfileSelector';
+import { ManuscriptLayoutPreview } from './ManuscriptLayoutPreview';
+import {
+  formatInTextCitation,
+  extractCitedReferences,
+  renderManuscriptWithFormattedCitations,
+  generateFormattedBibliographyText
+} from '../services/citationFormatter';
+import { PlanTier, PLAN_CONFIGS, SubscriptionState } from '../types/subscription';
+import { checkPlanLimits } from '../services/subscriptionService';
+import { UpgradeModal } from './UpgradeModal';
+import { UserProfile } from '../types';
 
 interface ManuscriptWorkspaceProps {
   project: Project;
@@ -81,10 +109,18 @@ interface ManuscriptWorkspaceProps {
   onRetrySave?: () => void;
   onManualSave?: () => void;
   userId?: string;
+  currentPlan?: PlanTier;
+  subscriptionState?: SubscriptionState;
+  onRecordUsage?: (action: 'ai_analysis' | 'export') => void;
+  onPlanUpgraded?: (plan: PlanTier) => void;
+  userProfile?: UserProfile | null;
+  onNavigateToPricing?: () => void;
 }
 
 type WorkspaceTab =
   | 'editor'
+  | 'layout_preview'
+  | 'formatting_profile'
   | 'analysis'
   | 'facts'
   | 'references'
@@ -106,15 +142,37 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
   lastSavedAt,
   onRetrySave,
   onManualSave,
-  userId = 'default_user'
+  userId = 'default_user',
+  currentPlan = 'FREE',
+  subscriptionState,
+  onRecordUsage,
+  onPlanUpgraded,
+  userProfile,
+  onNavigateToPricing,
 }) => {
   const manuscript = project.manuscript;
   const sections = manuscript?.sections || [];
 
+  const activePlan: PlanTier = (currentPlan as PlanTier) || 'FREE';
+
+  // Subscription Upgrade Modal State
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState<{
+    title: string;
+    description: string;
+    targetPlan: 'RESEARCHER' | 'PRO_RESEARCHER';
+  }>({
+    title: 'Plan Upgrade Required',
+    description: 'Upgrade your subscription to unlock this feature.',
+    targetPlan: 'RESEARCHER',
+  });
+
   // Active top-level workspace tab
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('editor');
 
-  // Editor states
+  // Editor states & Cursor Position Tracking
+  const editorTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const [editorCursorPosition, setEditorCursorPosition] = useState<number | null>(null);
   const [activeSectionId, setActiveSectionId] = useState<string>(sections[0]?.id || 'sec-title');
   const [showProvenanceTags, setShowProvenanceTags] = useState<boolean>(true);
   const [activeRightTab, setActiveRightTab] = useState<'assistant' | 'facts' | 'plan' | 'missing_info'>('assistant');
@@ -122,7 +180,8 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
   const [assistantLoading, setAssistantLoading] = useState<boolean>(false);
   const [assistantResult, setAssistantResult] = useState<string | null>(null);
   const [assistantExplanation, setAssistantExplanation] = useState<string | null>(null);
-  const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [isExportingDocx, setIsExportingDocx] = useState<boolean>(false);
+  const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
   const [regeneratingSection, setRegeneratingSection] = useState<string | null>(null);
 
   // Phase 3 Modal and Drawer states
@@ -171,6 +230,151 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
   const activeSection = sections.find((s) => s.id === activeSectionId) || sections[0];
   const formatSpec = FORMAT_SPECIFICATIONS.find((f) => f.id === project.formatId) || FORMAT_SPECIFICATIONS[0];
   const docTypeSpec = DOCUMENT_TYPE_OPTIONS.find((d) => d.key === project.documentTypeId) || DOCUMENT_TYPE_OPTIONS[0];
+
+  // Active Formatting Profile (General Research Paper, Master's Thesis, PhD Thesis)
+  const activeFormattingProfile: ManuscriptFormattingProfile = useMemo(() => {
+    return resolveProjectFormattingProfile(project);
+  }, [project]);
+
+  const handleSelectFormattingProfile = (profileId: FormattingProfileId) => {
+    const profile = getFormattingProfileById(profileId);
+    onUpdateProject({
+      ...project,
+      formattingProfileId: profileId,
+      citationStyle: profile.citationStyle || project.citationStyle || 'APA',
+      manuscript: manuscript
+        ? {
+            ...manuscript,
+            formattingProfileId: profileId,
+            citationStyle: profile.citationStyle || manuscript.citationStyle || 'APA',
+            lastSaved: new Date().toISOString()
+          }
+        : undefined,
+      updatedAt: new Date().toISOString()
+    });
+    setCitationFormatNotice(`Applied "${profile.name}" formatting profile.`);
+    setTimeout(() => setCitationFormatNotice(null), 3000);
+  };
+
+  const handleUpdateCustomProfile = (customProfile: ManuscriptFormattingProfile) => {
+    onUpdateProject({
+      ...project,
+      formattingProfileId: customProfile.id,
+      customFormattingProfile: customProfile,
+      updatedAt: new Date().toISOString()
+    });
+    setCitationFormatNotice(`Updated profile parameters for "${customProfile.name}".`);
+    setTimeout(() => setCitationFormatNotice(null), 3000);
+  };
+
+  // Citation Style State (Vancouver, APA, IEEE)
+  const activeCitationStyle: SupportedCitationStyle =
+    (project.citationStyle as SupportedCitationStyle) ||
+    (project.manuscript?.citationStyle as SupportedCitationStyle) ||
+    activeFormattingProfile.citationStyle ||
+    (formatSpec.citationStyle === 'Vancouver' || formatSpec.citationStyle === 'IEEE' || formatSpec.citationStyle === 'APA'
+      ? (formatSpec.citationStyle as SupportedCitationStyle)
+      : 'APA');
+
+  const [isFormattedCitationPreview, setIsFormattedCitationPreview] = useState<boolean>(false);
+  const [citationFormatNotice, setCitationFormatNotice] = useState<string | null>(null);
+
+  const handleCitationStyleChange = (newStyle: SupportedCitationStyle) => {
+    onUpdateProject({
+      ...project,
+      citationStyle: newStyle,
+      manuscript: manuscript
+        ? {
+            ...manuscript,
+            citationStyle: newStyle,
+            lastSaved: new Date().toISOString()
+          }
+        : undefined,
+      updatedAt: new Date().toISOString()
+    });
+    setCitationFormatNotice(`Switched citation style to ${newStyle}.`);
+    setTimeout(() => setCitationFormatNotice(null), 2500);
+  };
+
+  const handleFormatAllInTextTags = () => {
+    if (!manuscript) return;
+    const updatedSections = manuscript.sections.map((sec) => {
+      const formattedContent = renderManuscriptWithFormattedCitations(sec.content || '', project, activeCitationStyle);
+      const words = formattedContent.trim() ? formattedContent.trim().split(/\s+/).length : 0;
+      return {
+        ...sec,
+        content: formattedContent,
+        wordCount: words,
+        lastModified: new Date().toISOString()
+      };
+    });
+
+    onUpdateProject({
+      ...project,
+      citationStyle: activeCitationStyle,
+      manuscript: {
+        ...manuscript,
+        sections: updatedSections,
+        totalWordCount: updatedSections.reduce((acc, s) => acc + s.wordCount, 0),
+        lastSaved: new Date().toISOString()
+      },
+      updatedAt: new Date().toISOString()
+    });
+
+    setCitationFormatNotice(`Applied ${activeCitationStyle} format across in-text citation tags.`);
+    setTimeout(() => setCitationFormatNotice(null), 3000);
+  };
+
+  const handleAppendReferencesToManuscript = (formattedText: string) => {
+    if (!manuscript) return;
+    const existingRefSec = manuscript.sections.find(
+      (s) => s.title.toLowerCase().includes('reference') || s.title.toLowerCase().includes('bibliography')
+    );
+
+    let updatedSections: ManuscriptSection[];
+    if (existingRefSec) {
+      updatedSections = manuscript.sections.map((s) =>
+        s.id === existingRefSec.id
+          ? {
+              ...s,
+              content: formattedText,
+              wordCount: formattedText.trim().split(/\s+/).length,
+              lastModified: new Date().toISOString()
+            }
+          : s
+      );
+      setActiveSectionId(existingRefSec.id);
+    } else {
+      const newSec: ManuscriptSection = {
+        id: `sec-references-${Date.now()}`,
+        sectionKey: 'references',
+        title: 'References',
+        content: formattedText,
+        wordCount: formattedText.trim().split(/\s+/).length,
+        status: 'draft',
+        isRequired: false,
+        provenanceList: [],
+        lastModified: new Date().toISOString(),
+        order: manuscript.sections.length + 1
+      };
+      updatedSections = [...manuscript.sections, newSec];
+      setActiveSectionId(newSec.id);
+    }
+
+    onUpdateProject({
+      ...project,
+      manuscript: {
+        ...manuscript,
+        sections: updatedSections,
+        totalWordCount: updatedSections.reduce((acc, s) => acc + s.wordCount, 0),
+        lastSaved: new Date().toISOString()
+      },
+      updatedAt: new Date().toISOString()
+    });
+
+    setCitationFormatNotice(`References section updated in manuscript with ${activeCitationStyle} bibliography.`);
+    setTimeout(() => setCitationFormatNotice(null), 3000);
+  };
 
   // Helper for updating section content
   const handleSectionContentChange = (newContent: string) => {
@@ -365,12 +569,198 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
     });
   };
 
+  // --------------------------------------------------------------------------
+  // Phase 4.1: Basic Citation Insertion Handler
+  // --------------------------------------------------------------------------
+  const handleInsertCitation = (selectedReferences: ProjectReference[]) => {
+    if (!selectedReferences || selectedReferences.length === 0) return;
+
+    // Target active section (or first available section)
+    const targetSection =
+      activeSection ||
+      (manuscript?.sections && manuscript.sections.length > 0 ? manuscript.sections[0] : null);
+    if (!targetSection) return;
+
+    // 1. Build citation keys/tags using the active citation style (Vancouver: (1), APA: (Smith, 2023), IEEE: [1]):
+    const { refToOrderMap } = extractCitedReferences(project);
+    const styleFormattedTag = formatInTextCitation(selectedReferences, activeCitationStyle, refToOrderMap);
+    
+    // Fallback tag if formatter returns empty
+    const citationTags = selectedReferences.map((ref) => {
+      if (ref.citationKey && ref.citationKey.trim()) {
+        return ref.citationKey.trim();
+      }
+      const firstAuthor =
+        ref.authors?.[0]?.lastName || ref.authors?.[0]?.fullName?.split(' ')[0] || 'Ref';
+      const year = ref.publicationYear ? `${ref.publicationYear}` : '';
+      const cleanAuthor = firstAuthor.replace(/[^a-zA-Z0-9]/g, '');
+      return `${cleanAuthor}${year}`;
+    });
+    const formattedTag = styleFormattedTag || `[${citationTags.join('; ')}]`;
+
+    // 2. Insert at current cursor position or append to content
+    const currentContent = targetSection.content || '';
+    const insertPos =
+      editorCursorPosition !== null &&
+      editorCursorPosition >= 0 &&
+      editorCursorPosition <= currentContent.length
+        ? editorCursorPosition
+        : currentContent.length;
+
+    const leadingSpace =
+      insertPos > 0 && currentContent[insertPos - 1] !== ' ' && currentContent[insertPos - 1] !== '\n'
+        ? ' '
+        : '';
+    const trailingSpace =
+      insertPos < currentContent.length && currentContent[insertPos] !== ' ' && currentContent[insertPos] !== '\n'
+        ? ' '
+        : ' ';
+
+    const insertionText = `${leadingSpace}${formattedTag}${trailingSpace}`;
+    const updatedContent =
+      currentContent.slice(0, insertPos) + insertionText + currentContent.slice(insertPos);
+    const newCursorPos = insertPos + insertionText.length;
+
+    // 3. Create persistent ManuscriptCitation records retaining stable links to selected ProjectReference records
+    const now = new Date().toISOString();
+    const msId = manuscript?.id || `ms_${project.id}`;
+    const existingCitations = project.citations || [];
+
+    const newCitations: ManuscriptCitation[] = selectedReferences.map((ref, idx) => ({
+      id: `cite_${Date.now()}_${Math.random().toString(36).substring(2, 7)}_${idx}`,
+      projectId: project.id,
+      manuscriptId: msId,
+      sectionId: targetSection.id,
+      referenceId: ref.id,
+      inTextTag: formattedTag,
+      citationOrder: existingCitations.length + idx + 1,
+      userId: userId || project.userId,
+      createdAt: now,
+    }));
+
+    const allCitations = [...existingCitations, ...newCitations];
+
+    // 4. Update section provenance list with referenceIds for traceability
+    const refIds = selectedReferences.map((r) => r.id);
+    const existingProvList = targetSection.provenanceList || [];
+    let updatedProvenanceList = existingProvList.map((prov, pIdx) => {
+      if (pIdx === 0) {
+        const existingRefIds = prov.referenceIds || [];
+        return {
+          ...prov,
+          referenceIds: Array.from(new Set([...existingRefIds, ...refIds])),
+          provenanceType: 'literature_derived' as const,
+        };
+      }
+      return prov;
+    });
+
+    if (updatedProvenanceList.length === 0) {
+      updatedProvenanceList = [
+        {
+          paragraphId: `prov-${targetSection.id}-0`,
+          paragraphIndex: 0,
+          textSnippet: updatedContent.slice(0, 100),
+          provenanceType: 'literature_derived',
+          factIds: [],
+          referenceIds: refIds,
+          sourceLabels: selectedReferences.map((r) => r.title),
+          userVerified: true,
+        },
+      ];
+    }
+
+    // 5. Build updated sections
+    const updatedSections = (manuscript?.sections || []).map((s) => {
+      if (s.id === targetSection.id) {
+        return {
+          ...s,
+          content: updatedContent,
+          wordCount: updatedContent.split(/\s+/).filter(Boolean).length,
+          lastModified: now,
+          provenanceList: updatedProvenanceList,
+        };
+      }
+      return s;
+    });
+
+    const updatedProject: Project = {
+      ...project,
+      citations: allCitations,
+      manuscript: manuscript
+        ? {
+            ...manuscript,
+            sections: updatedSections,
+            totalWordCount: updatedSections.reduce((acc, s) => acc + s.wordCount, 0),
+            lastSaved: now,
+          }
+        : {
+            id: msId,
+            projectId: project.id,
+            title: project.title,
+            sections: updatedSections,
+            totalWordCount: updatedSections.reduce((acc, s) => acc + s.wordCount, 0),
+            formatId: project.formatId || 'fmt-nature-springer',
+            lastSaved: now,
+          },
+      updatedAt: now,
+    };
+
+    // 6. Update project state
+    onUpdateProject(updatedProject);
+
+    // 7. Persist directly to Supabase
+    if (!project.isDemoProject && userId) {
+      newCitations.forEach((cite) => {
+        saveManuscriptCitation(cite, userId).catch((err) =>
+          console.warn('Supabase save citation warning:', err)
+        );
+      });
+    }
+
+    // 8. Focus editor and place cursor right after inserted citation
+    setActiveSectionId(targetSection.id);
+    setEditorCursorPosition(newCursorPos);
+    setActiveTab('editor');
+
+    setTimeout(() => {
+      if (editorTextareaRef.current) {
+        editorTextareaRef.current.focus();
+        editorTextareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
+      }
+    }, 50);
+  };
+
   const handleInsertReferenceToEditor = (refText: string) => {
     if (!activeSection) return;
-    const updatedContent = activeSection.content.trim()
-      ? `${activeSection.content} ${refText}`
-      : refText;
+    const currentContent = activeSection.content || '';
+    const insertPos =
+      editorCursorPosition !== null &&
+      editorCursorPosition >= 0 &&
+      editorCursorPosition <= currentContent.length
+        ? editorCursorPosition
+        : currentContent.length;
+
+    const leadingSpace =
+      insertPos > 0 && currentContent[insertPos - 1] !== ' ' && currentContent[insertPos - 1] !== '\n'
+        ? ' '
+        : '';
+    const formattedText = `[${refText}]`;
+    const insertion = `${leadingSpace}${formattedText} `;
+    const updatedContent =
+      currentContent.slice(0, insertPos) + insertion + currentContent.slice(insertPos);
+    const newCursorPos = insertPos + insertion.length;
+
     handleSectionContentChange(updatedContent);
+    setEditorCursorPosition(newCursorPos);
+    setActiveTab('editor');
+
+    setTimeout(() => {
+      if (editorTextareaRef.current) {
+        editorTextareaRef.current.focus();
+        editorTextareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
+      }
+    }, 50);
   };
 
   const handleUpdateSectionMissingInfo = (sectionId: string, items: MissingInfoItem[]) => {
@@ -427,6 +817,21 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
       return;
     }
 
+    const check = checkPlanLimits({
+      action: 'ai_analysis',
+      currentPlan: activePlan,
+      currentUsage: subscriptionState?.usage || { aiAnalysesThisMonth: 0, exportsThisMonth: 0 },
+    });
+    if (!check.allowed) {
+      setUpgradeReason({
+        title: 'Monthly AI Analysis Limit Reached',
+        description: check.reason || `You have used your monthly AI quota (${check.limit} analyses) on the ${PLAN_CONFIGS[activePlan].name} tier. Upgrade for higher limits.`,
+        targetPlan: activePlan === 'FREE' ? 'RESEARCHER' : 'PRO_RESEARCHER',
+      });
+      setShowUpgradeModal(true);
+      return;
+    }
+
     setAssistantLoading(true);
     setAssistantResult(null);
     setAssistantExplanation(null);
@@ -440,6 +845,7 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
       );
       setAssistantResult(response.result);
       setAssistantExplanation(response.explanation || null);
+      if (onRecordUsage) onRecordUsage('ai_analysis');
     } catch (err: any) {
       setAssistantResult(`Error running action: ${err.message}`);
     } finally {
@@ -460,15 +866,59 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
     setSelectedText('');
   };
 
-  // Handle Export
-  const handleExport = async () => {
-    setIsExporting(true);
+  // Handle Export to DOCX
+  const handleExportDocx = async () => {
+    const check = checkPlanLimits({
+      action: 'export',
+      currentPlan: activePlan,
+      currentUsage: subscriptionState?.usage || { aiAnalysesThisMonth: 0, exportsThisMonth: 0 },
+    });
+    if (!check.allowed) {
+      setUpgradeReason({
+        title: 'Monthly Export Limit Reached',
+        description: check.reason || `You have reached the monthly export limit (${check.limit} exports/month) on the Free plan. Upgrade to Researcher for unlimited DOCX and PDF exports.`,
+        targetPlan: 'RESEARCHER',
+      });
+      setShowUpgradeModal(true);
+      return;
+    }
+
+    setIsExportingDocx(true);
     try {
-      await exportManuscript(project);
+      await exportManuscriptToDocx(project, activeFormattingProfile, activeCitationStyle);
+      if (onRecordUsage) onRecordUsage('export');
     } catch (err: any) {
-      alert(`Export failed: ${err.message}`);
+      alert(`DOCX export failed: ${err.message}`);
     } finally {
-      setIsExporting(false);
+      setIsExportingDocx(false);
+    }
+  };
+
+  // Handle Export to PDF
+  const handleExportPdf = async () => {
+    const check = checkPlanLimits({
+      action: 'export',
+      currentPlan: activePlan,
+      currentUsage: subscriptionState?.usage || { aiAnalysesThisMonth: 0, exportsThisMonth: 0 },
+    });
+    if (!check.allowed) {
+      setUpgradeReason({
+        title: 'Monthly Export Limit Reached',
+        description: check.reason || `You have reached the monthly export limit (${check.limit} exports/month) on the Free plan. Upgrade to Researcher for unlimited DOCX and PDF exports.`,
+        targetPlan: 'RESEARCHER',
+      });
+      setShowUpgradeModal(true);
+      return;
+    }
+
+    setIsExportingPdf(true);
+    try {
+      await exportManuscriptToPdf(project, activeFormattingProfile, activeCitationStyle);
+      if (onRecordUsage) onRecordUsage('export');
+    } catch (err: any) {
+      alert(`PDF export failed: ${err.message}`);
+    } finally {
+      setIsExportingPdf(false);
     }
   };
 
@@ -548,6 +998,21 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
 
   // Run Multimodal AI File Analysis
   const handleAnalyzeFile = async (file: ResearchFile) => {
+    const check = checkPlanLimits({
+      action: 'ai_analysis',
+      currentPlan: activePlan,
+      currentUsage: subscriptionState?.usage || { aiAnalysesThisMonth: 0, exportsThisMonth: 0 },
+    });
+    if (!check.allowed) {
+      setUpgradeReason({
+        title: 'Monthly AI Analysis Limit Reached',
+        description: check.reason || `You have reached your monthly AI quota (${check.limit} analyses) on the ${PLAN_CONFIGS[activePlan].name} tier. Upgrade for higher limits.`,
+        targetPlan: activePlan === 'FREE' ? 'RESEARCHER' : 'PRO_RESEARCHER',
+      });
+      setShowUpgradeModal(true);
+      return;
+    }
+
     setAnalyzingFileId(file.id);
     try {
       const analysis = await analyzeResearchFile(file, {
@@ -555,6 +1020,7 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
         hypothesis: project.hypothesis,
         methodology: project.methodology
       });
+      if (onRecordUsage) onRecordUsage('ai_analysis');
 
       const updatedFiles = (project.files || []).map((f) => {
         if (f.id === file.id) {
@@ -762,21 +1228,22 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
   });
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-      {/* Top Workspace Header */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 space-y-4">
+      {/* Top Workspace Header - High Density */}
+      <div className="bg-white border border-[#141414] p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm bg-indigo-950 text-indigo-300 border border-indigo-800/80">
+          <div className="flex items-center gap-2 flex-wrap text-[10px] font-mono">
+            <span className="font-bold uppercase tracking-wider px-1.5 py-0.5 bg-[#141414] text-white">
               {project.documentTypeId.replace(/_/g, ' ')}
             </span>
-            <span className="text-slate-400 text-xs font-mono">• {formatSpec.name}</span>
-            <span className="text-slate-500 text-xs font-mono">• Citation: {formatSpec.citationStyle}</span>
+            <span className="text-[#141414] font-bold">• Profile: {activeFormattingProfile.name}</span>
+            <span className="text-[#555]">• Citation: {activeCitationStyle}</span>
+            <span className="text-[#555]">• Margins: {activeFormattingProfile.pageMargins.left} L</span>
           </div>
-          <h1 className="text-lg sm:text-xl font-serif-academic font-bold text-white leading-snug">
+          <h1 className="text-lg sm:text-xl font-serif-academic font-bold text-[#141414] leading-snug">
             {project.title}
           </h1>
-          <p className="text-xs text-slate-400 font-sans-ui">
+          <p className="text-xs text-[#555] font-sans-ui">
             {project.researchArea} {project.subField ? `| ${project.subField}` : ''}
           </p>
         </div>
@@ -791,14 +1258,28 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
             onManualSave={onManualSave}
           />
 
+          {/* Layout Preview Quick Button */}
+          <button
+            onClick={() => setActiveTab(activeTab === 'layout_preview' ? 'editor' : 'layout_preview')}
+            className={`px-3 py-1.5 text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer font-mono ${
+              activeTab === 'layout_preview'
+                ? 'bg-[#141414] text-white border-[#141414]'
+                : 'bg-white hover:bg-[#E9E8E5] text-[#141414] border-[#141414]'
+            }`}
+            title="Toggle Manuscript Page Layout Preview"
+          >
+            <Eye className="w-3.5 h-3.5" />
+            <span>Layout Preview</span>
+          </button>
+
           {/* Provenance Toggle */}
           <button
             id="ws-provenance-toggle"
             onClick={() => setShowProvenanceTags(!showProvenanceTags)}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 py-1.5 text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer font-mono ${
               showProvenanceTags
-                ? 'bg-emerald-950/70 border-emerald-700 text-emerald-300'
-                : 'bg-slate-950 border-slate-800 text-slate-400'
+                ? 'bg-emerald-100 border-emerald-800 text-emerald-950'
+                : 'bg-white border-[#141414] text-[#141414] hover:bg-[#E9E8E5]'
             }`}
           >
             <ShieldCheck className="w-3.5 h-3.5" />
@@ -808,10 +1289,10 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
           {/* Snapshot Button */}
           <button
             onClick={() => setIsSnapshotModalOpen(true)}
-            className="px-3 py-1.5 text-xs font-semibold rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
+            className="px-3 py-1.5 text-xs font-bold bg-white hover:bg-[#E9E8E5] text-[#141414] border border-[#141414] transition-colors flex items-center gap-1 cursor-pointer font-mono"
             title="Save version snapshot"
           >
-            <Save className="w-3.5 h-3.5 text-indigo-400" />
+            <Save className="w-3.5 h-3.5 text-[#141414]" />
             Snapshot
           </button>
 
@@ -819,33 +1300,72 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
           <button
             id="ws-quick-quality-btn"
             onClick={onNavigateToQualityChecks}
-            className="px-3 py-1.5 text-xs font-semibold rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
+            className="px-3 py-1.5 text-xs font-bold bg-white hover:bg-[#E9E8E5] text-[#141414] border border-[#141414] transition-colors flex items-center gap-1 cursor-pointer font-mono"
           >
-            <FileCheck className="w-3.5 h-3.5 text-amber-400" />
+            <FileCheck className="w-3.5 h-3.5 text-amber-600" />
             Quality Checks ({project.qualityReport?.overallScore || 95}%)
           </button>
 
-          {/* Export Button */}
+          {/* Plan Quota Badge */}
+          {currentPlan === 'FREE' ? (
+            <button
+              onClick={() => {
+                setUpgradeReason({
+                  title: 'Upgrade to Researcher',
+                  description: 'Free plan includes 2 exports/month and 10 AI analyses/month. Upgrade for unlimited exports, all citation styles, and higher limits.',
+                  targetPlan: 'RESEARCHER',
+                });
+                setShowUpgradeModal(true);
+              }}
+              className="px-2.5 py-1 text-[10px] font-mono font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-400 rounded-sm flex items-center gap-1 cursor-pointer transition-colors"
+              title="Click to view plan limits and upgrade"
+            >
+              <span>FREE ({Math.max(0, 2 - (subscriptionState?.usage.exportsThisMonth || 0))}/2 exports left)</span>
+              <span className="underline font-sans font-semibold">Upgrade</span>
+            </button>
+          ) : currentPlan === 'RESEARCHER' ? (
+            <span className="px-2 py-0.5 text-[10px] font-mono font-bold bg-indigo-100 text-indigo-900 border border-indigo-300">
+              RESEARCHER • UNLIMITED EXPORTS
+            </span>
+          ) : (
+            <span className="px-2 py-0.5 text-[10px] font-mono font-bold bg-emerald-100 text-emerald-900 border border-emerald-400">
+              PRO RESEARCHER • UNLIMITED
+            </span>
+          )}
+
+          {/* Export Buttons */}
           <button
-            id="ws-export-btn"
-            onClick={handleExport}
-            disabled={isExporting}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-1.5 rounded-md transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
+            id="ws-export-docx-btn"
+            onClick={handleExportDocx}
+            disabled={isExportingDocx || isExportingPdf}
+            className="bg-[#141414] hover:bg-[#2A2A2A] text-white text-xs font-bold px-3 py-1.5 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 font-mono"
+            title={`Export formatted manuscript as DOCX using ${activeFormattingProfile.name} profile`}
           >
             <Download className="w-3.5 h-3.5" />
-            {isExporting ? 'Exporting...' : 'Export'}
+            {isExportingDocx ? 'Exporting DOCX...' : 'Export DOCX'}
+          </button>
+
+          <button
+            id="ws-export-pdf-btn"
+            onClick={handleExportPdf}
+            disabled={isExportingDocx || isExportingPdf}
+            className="bg-[#141414] hover:bg-[#2A2A2A] text-white text-xs font-bold px-3 py-1.5 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 font-mono"
+            title={`Export formatted manuscript as PDF using ${activeFormattingProfile.name} profile`}
+          >
+            <Download className="w-3.5 h-3.5" />
+            {isExportingPdf ? 'Exporting PDF...' : 'Export PDF'}
           </button>
         </div>
       </div>
 
-      {/* Workspace Navigation Bar */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-1.5 flex items-center gap-1 overflow-x-auto shadow-sm">
+      {/* Workspace Navigation Bar - High Density Tabs */}
+      <div className="bg-[#F0EFED] border border-[#141414] p-1 flex items-center gap-1 overflow-x-auto">
         <button
           onClick={() => setActiveTab('editor')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'editor'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
           <Layers className="w-3.5 h-3.5" />
@@ -853,176 +1373,204 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
         </button>
 
         <button
-          onClick={() => setActiveTab('analysis')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-            activeTab === 'analysis'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          onClick={() => setActiveTab('layout_preview')}
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+            activeTab === 'layout_preview'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
-          <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+          <Eye className="w-3.5 h-3.5" />
+          Layout Preview
+        </button>
+
+        <button
+          onClick={() => setActiveTab('formatting_profile')}
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+            activeTab === 'formatting_profile'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
+          }`}
+        >
+          <Sliders className="w-3.5 h-3.5" />
+          Formatting Profiles ({activeFormattingProfile.shortName})
+        </button>
+
+        <button
+          onClick={() => setActiveTab('analysis')}
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+            activeTab === 'analysis'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
+          }`}
+        >
+          <Cpu className="w-3.5 h-3.5" />
           Research Analysis
         </button>
 
         <button
           onClick={() => setActiveTab('facts')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'facts'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
-          <Tag className="w-3.5 h-3.5 text-emerald-400" />
+          <Tag className="w-3.5 h-3.5" />
           Research Facts ({(project.facts || []).filter((f) => f.userVerified || f.verificationStatus === 'VERIFIED').length}/{(project.facts || []).length})
         </button>
 
         <button
           onClick={() => setActiveTab('references')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'references'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
-          <BookOpen className="w-3.5 h-3.5 text-teal-400" />
+          <BookOpen className="w-3.5 h-3.5" />
           Literature References ({(project.references || []).length})
         </button>
 
         <button
           onClick={() => setActiveTab('figures')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'figures'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
-          <ImageIcon className="w-3.5 h-3.5 text-cyan-400" />
+          <ImageIcon className="w-3.5 h-3.5" />
           Figures & Tables ({(project.figures || []).length + (project.tables || []).length})
         </button>
 
         <button
           onClick={() => setActiveTab('summary')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'summary'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
-          <Database className="w-3.5 h-3.5 text-blue-400" />
+          <Database className="w-3.5 h-3.5" />
           Structured Record
         </button>
 
         <button
           onClick={() => setActiveTab('plan')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'plan'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
-          <BookOpen className="w-3.5 h-3.5 text-amber-400" />
+          <BookOpen className="w-3.5 h-3.5" />
           Manuscript Plan ({project.plan?.sections?.length || sections.length})
         </button>
 
         <button
           onClick={() => setActiveTab('files')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'files'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
-          <BarChart2 className="w-3.5 h-3.5 text-purple-400" />
+          <BarChart2 className="w-3.5 h-3.5" />
           Research Files ({(project.files || []).length})
         </button>
 
         <button
           onClick={() => setActiveTab('info')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'info'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
-          <Info className="w-3.5 h-3.5 text-sky-400" />
-          Research Information
+          <Info className="w-3.5 h-3.5" />
+          Research Info
         </button>
 
         <button
           onClick={() => setActiveTab('versions')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'versions'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              ? 'bg-[#141414] text-white'
+              : 'text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
-          <History className="w-3.5 h-3.5 text-rose-400" />
+          <History className="w-3.5 h-3.5" />
           Version History ({(project.versions || []).length})
         </button>
       </div>
 
       {/* TAB 1: MANUSCRIPT EDITOR */}
       {activeTab === 'editor' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
           {/* Left Column: Sections Navigation */}
-          <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4 shadow-sm">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                <Layers className="w-3.5 h-3.5 text-indigo-400" />
+          <div className="lg:col-span-3 bg-[#F0EFED] border border-[#141414] p-3 space-y-3">
+            <div className="flex items-center justify-between border-b border-[#141414] pb-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-[#141414] flex items-center gap-1.5 font-mono">
+                <Layers className="w-3.5 h-3.5" />
                 Outline ({sections.length})
               </span>
               <button
                 id="ws-add-section-btn"
                 onClick={handleAddSection}
-                className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition-colors cursor-pointer"
+                className="text-[#141414] hover:bg-[#E4E3E0] p-1 border border-[#141414] transition-colors cursor-pointer"
                 title="Add Section"
               >
                 <Plus className="w-3.5 h-3.5" />
               </button>
             </div>
 
-            <div className="space-y-1.5 max-h-[580px] overflow-y-auto pr-1">
+            <div className="space-y-1 max-h-[580px] overflow-y-auto pr-1">
               {sections.map((sec, idx) => (
                 <div key={sec.id} className="group relative flex items-center">
                   <button
                     onClick={() => setActiveSectionId(sec.id)}
-                    className={`flex-1 text-left p-2.5 rounded-md text-xs transition-all flex items-center justify-between cursor-pointer ${
+                    className={`flex-1 text-left p-2 text-xs transition-all flex items-center justify-between cursor-pointer border ${
                       activeSectionId === sec.id
-                        ? 'bg-indigo-950/90 border border-indigo-500 text-white font-semibold shadow-xs'
-                        : 'bg-slate-950/60 border border-slate-900 text-slate-300 hover:border-slate-700'
+                        ? 'bg-[#141414] border-[#141414] text-white font-bold'
+                        : 'bg-white border-[#141414]/20 text-[#141414] hover:border-[#141414]'
                     }`}
                   >
                     <div className="truncate pr-2">
-                      <span className="text-[10px] text-slate-500 font-mono mr-1.5">{idx + 1}.</span>
+                      <span className={`text-[10px] font-mono mr-1.5 ${activeSectionId === sec.id ? 'text-gray-300' : 'text-[#666]'}`}>
+                        {idx + 1}.
+                      </span>
                       <span>{sec.title}</span>
                     </div>
-                    <span className="text-[10px] text-slate-500 font-mono shrink-0">{sec.wordCount}w</span>
+                    <span className={`text-[10px] font-mono shrink-0 ${activeSectionId === sec.id ? 'text-gray-300' : 'text-[#666]'}`}>
+                      {sec.wordCount}w
+                    </span>
                   </button>
                   <button
                     onClick={() => handleRegenerateSection(sec)}
                     disabled={regeneratingSection === sec.id}
                     title="Regenerate section with AI"
-                    className="opacity-0 group-hover:opacity-100 absolute right-14 text-slate-400 hover:text-indigo-300 p-1 transition-opacity cursor-pointer"
+                    className="opacity-0 group-hover:opacity-100 absolute right-14 text-gray-500 hover:text-black p-1 transition-opacity cursor-pointer"
                   >
-                    <RefreshCw className={`w-3 h-3 ${regeneratingSection === sec.id ? 'animate-spin text-indigo-400' : ''}`} />
+                    <RefreshCw className={`w-3 h-3 ${regeneratingSection === sec.id ? 'animate-spin text-black' : ''}`} />
                   </button>
                 </div>
               ))}
             </div>
 
             {/* Format limit status */}
-            <div className="bg-slate-950 p-3.5 rounded-lg border border-slate-800 text-[11px] space-y-1.5 text-slate-400">
+            <div className="bg-white p-3 border border-[#141414] text-[11px] space-y-1.5 text-[#141414]">
               <div className="flex justify-between">
-                <span className="font-medium">Total Words:</span>
-                <span className="font-semibold text-white font-mono">{manuscript?.totalWordCount || 0}</span>
+                <span className="font-semibold">Total Words:</span>
+                <span className="font-bold font-mono">{manuscript?.totalWordCount || 0}</span>
               </div>
               <div className="flex justify-between">
-                <span className="font-medium">Target Budget:</span>
+                <span className="font-semibold">Target Budget:</span>
                 <span className="font-mono">{formatSpec.wordLimit.max} words</span>
               </div>
-              <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-1.5">
+              <div className="w-full bg-[#E4E3E0] h-1.5 overflow-hidden mt-1.5 border border-[#141414]/20">
                 <div
-                  className="bg-indigo-500 h-full rounded-full transition-all duration-300"
+                  className="bg-[#141414] h-full transition-all duration-300"
                   style={{
                     width: `${Math.min(
                       100,
@@ -1035,12 +1583,12 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
           </div>
 
           {/* Center Column: Academic Document Editor & Paper Sheet Presentation */}
-          <div className="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-5 shadow-sm">
+          <div className="lg:col-span-6 bg-white border border-[#141414] p-6 space-y-5 shadow-[4px_4px_0px_rgba(20,20,20,0.06)]">
             {/* Section Header & Provenance Badge */}
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center justify-between border-b border-[#141414] pb-3">
               <div>
-                <h2 className="text-base font-serif-academic font-bold text-white">{activeSection?.title}</h2>
-                <span className="text-[11px] text-slate-400 font-mono">
+                <h2 className="text-base font-serif-academic font-bold text-[#141414]">{activeSection?.title}</h2>
+                <span className="text-[11px] text-[#555] font-mono">
                   {activeSection?.wordCount || 0} words &bull; Section {sections.findIndex((s) => s.id === activeSectionId) + 1} of {sections.length}
                 </span>
               </div>
@@ -1048,9 +1596,9 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
                 <button
                   onClick={() => activeSection && handleRegenerateSection(activeSection)}
                   disabled={Boolean(regeneratingSection)}
-                  className="text-[11px] px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1 transition-colors cursor-pointer"
+                  className="text-[11px] px-2.5 py-1 bg-white hover:bg-[#E9E8E5] text-[#141414] border border-[#141414] flex items-center gap-1 transition-colors cursor-pointer font-mono font-bold"
                 >
-                  <RefreshCw className={`w-3 h-3 ${regeneratingSection === activeSection?.id ? 'animate-spin text-indigo-400' : ''}`} />
+                  <RefreshCw className={`w-3 h-3 ${regeneratingSection === activeSection?.id ? 'animate-spin text-black' : ''}`} />
                   Regenerate
                 </button>
                 {showProvenanceTags && getTagBadge(primaryProvenance)}
@@ -1059,58 +1607,207 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
 
             {/* Traceability Banner if enabled */}
             {showProvenanceTags && (
-              <div className="bg-slate-950/90 p-3.5 rounded-lg border border-slate-800/90 text-xs space-y-1">
-                <div className="flex items-center justify-between text-slate-300 font-medium">
-                  <span className="flex items-center gap-1.5 text-emerald-400 text-xs font-semibold">
+              <div className="bg-[#FAF9F7] p-3 border border-[#141414] text-xs space-y-1">
+                <div className="flex items-center justify-between text-[#141414] font-bold font-mono">
+                  <span className="flex items-center gap-1.5 text-emerald-800 text-xs">
                     <ShieldCheck className="w-3.5 h-3.5" />
                     Fact Integrity Status:
                   </span>
-                  <span className="text-[11px] text-slate-400 font-mono">Preserved from Primary Inputs</span>
+                  <span className="text-[11px] text-[#555]">Preserved from Primary Inputs</span>
                 </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed font-sans-ui">
+                <p className="text-[11px] text-[#555] leading-relaxed font-sans-ui">
                   Values, sample metrics, and methodology parameters in this section are directly derived from user submissions and verified citations.
                 </p>
               </div>
             )}
 
-            {/* Academic Textarea Editor */}
-            <div>
-              <textarea
-                rows={16}
-                value={activeSection?.content || ''}
-                onChange={(e) => handleSectionContentChange(e.target.value)}
-                onSelect={(e: any) => {
-                  const start = e.target.selectionStart;
-                  const end = e.target.selectionEnd;
-                  if (start !== end) {
-                    setSelectedText(e.target.value.substring(start, end));
-                  }
-                }}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-4 text-slate-200 font-serif-academic text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 resize-y"
-                placeholder="Draft section content..."
-              />
+            {/* Manuscript Formatting Profile & Citation Style Toolbar */}
+            <div className="bg-[#F0EFED] border border-[#141414] p-3 space-y-2.5">
+              {/* Profile Selector Row */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 border-b border-[#141414]/15 pb-2.5">
+                <FormatProfileSelector
+                  project={project}
+                  activeProfile={activeFormattingProfile}
+                  onSelectProfile={handleSelectFormattingProfile}
+                  onUpdateCustomProfile={handleUpdateCustomProfile}
+                  onOpenPreview={() => setActiveTab('layout_preview')}
+                  compact={true}
+                />
+              </div>
+
+              {/* Citation Style & Action Row */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <CitationStyleSelector
+                  currentStyle={activeCitationStyle}
+                  onStyleChange={handleCitationStyleChange}
+                />
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Toggle between Raw Markdown Editor and Live Formatted Academic View */}
+                  <button
+                    onClick={() => setIsFormattedCitationPreview(!isFormattedCitationPreview)}
+                    className={`px-2.5 py-1 text-xs font-mono font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${
+                      isFormattedCitationPreview
+                        ? 'bg-[#141414] text-white border-[#141414]'
+                        : 'bg-white hover:bg-[#E9E8E5] text-[#141414] border-[#141414]'
+                    }`}
+                    title="Toggle between raw editor and formatted in-text citation preview"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>{isFormattedCitationPreview ? 'Viewing Formatted' : 'Live Citation View'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleFormatAllInTextTags}
+                    className="px-2.5 py-1 text-xs font-mono font-bold bg-white hover:bg-[#E9E8E5] text-[#141414] border border-[#141414] flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title={`Reformat in-text tags in all sections to match ${activeCitationStyle} syntax`}
+                  >
+                    <Sparkles className="w-3 h-3 text-[#141414]" />
+                    <span>Format Tags to {activeCitationStyle}</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveTab('references')}
+                    className="px-2.5 py-1 text-xs font-mono font-bold bg-white hover:bg-[#E9E8E5] text-[#141414] border border-[#141414] flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="Open Literature Library to insert citations"
+                  >
+                    <Bookmark className="w-3 h-3 text-[#141414]" />
+                    <span>+ Insert Cite</span>
+                  </button>
+                </div>
+              </div>
+
+              {citationFormatNotice && (
+                <div className="text-[11px] font-mono text-emerald-800 bg-emerald-50 px-2.5 py-1 border border-emerald-300 flex items-center gap-1.5">
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>{citationFormatNotice}</span>
+                </div>
+              )}
             </div>
+
+            {/* Academic Textarea Editor or Live Formatted Citation View */}
+            <div>
+              {isFormattedCitationPreview ? (
+                <div className="w-full bg-[#FAF9F7] border border-[#141414] p-5 text-[#141414] font-serif-academic text-sm leading-relaxed space-y-3 min-h-[360px]">
+                  <div className="flex items-center justify-between border-b border-[#141414]/20 pb-2 mb-2 font-mono text-xs">
+                    <span className="font-bold text-[#141414] uppercase flex items-center gap-1.5">
+                      <Eye className="w-3.5 h-3.5" />
+                      Live Formatted Preview &bull; {activeCitationStyle} Citations
+                    </span>
+                    <span className="text-[10px] text-[#666]">Read-Only Formatted View</span>
+                  </div>
+                  <div className="whitespace-pre-wrap leading-relaxed select-text">
+                    {renderManuscriptWithFormattedCitations(
+                      activeSection?.content || '',
+                      project,
+                      activeCitationStyle
+                    ) || <span className="text-gray-400 italic">No section content to render.</span>}
+                  </div>
+                </div>
+              ) : (
+                <textarea
+                  ref={editorTextareaRef}
+                  rows={16}
+                  value={activeSection?.content || ''}
+                  onChange={(e) => {
+                    handleSectionContentChange(e.target.value);
+                    setEditorCursorPosition(e.target.selectionStart);
+                  }}
+                  onClick={(e) => {
+                    const target = e.currentTarget;
+                    setEditorCursorPosition(target.selectionStart);
+                    if (target.selectionStart !== target.selectionEnd) {
+                      setSelectedText(target.value.substring(target.selectionStart, target.selectionEnd));
+                    }
+                  }}
+                  onKeyUp={(e) => {
+                    const target = e.currentTarget;
+                    setEditorCursorPosition(target.selectionStart);
+                    if (target.selectionStart !== target.selectionEnd) {
+                      setSelectedText(target.value.substring(target.selectionStart, target.selectionEnd));
+                    }
+                  }}
+                  onSelect={(e) => {
+                    const target = e.currentTarget;
+                    const start = target.selectionStart;
+                    const end = target.selectionEnd;
+                    setEditorCursorPosition(start);
+                    if (start !== end) {
+                      setSelectedText(target.value.substring(start, end));
+                    }
+                  }}
+                  className="w-full bg-[#FAF9F7] border border-[#141414]/30 focus:border-[#141414] p-4 text-[#141414] font-serif-academic text-sm leading-relaxed focus:outline-none resize-y"
+                  placeholder="Draft section content..."
+                />
+              )}
+            </div>
+
+            {/* Active Section Citations & Provenance Summary Bar */}
+            {(() => {
+              const { refToOrderMap } = extractCitedReferences(project);
+              const activeSectionCitations = (project.citations || []).filter((c) => c.sectionId === activeSectionId);
+              const activeSectionRefIds = new Set<string>([
+                ...activeSectionCitations.map((c) => c.referenceId),
+                ...((activeSection?.provenanceList || []).flatMap((p) => p.referenceIds || []))
+              ]);
+              const activeSectionRefs = (project.references || []).filter((r) => activeSectionRefIds.has(r.id));
+
+              if (activeSectionRefs.length === 0) return null;
+
+              return (
+                <div className="bg-[#FAF9F7] border border-[#141414] p-3 text-xs space-y-2">
+                  <div className="flex items-center justify-between font-mono">
+                    <span className="font-bold uppercase text-[#141414] text-[11px] flex items-center gap-1.5">
+                      <Bookmark className="w-3.5 h-3.5 text-[#141414]" />
+                      Section Citations ({activeSectionRefs.length}) &bull; {activeCitationStyle} Format:
+                    </span>
+                    <span className="text-[10px] text-[#666]">
+                      {activeSectionCitations.length} linked record{activeSectionCitations.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {activeSectionRefs.map((r) => {
+                      const inText = formatInTextCitation([r], activeCitationStyle, refToOrderMap);
+                      return (
+                        <div
+                          key={r.id}
+                          className="bg-white border border-[#141414] px-2 py-1 flex items-center gap-1.5 font-mono text-[11px]"
+                          title={`${r.title} (${r.publicationYear || 'n.d.'})`}
+                        >
+                          <span className="font-bold bg-[#141414] text-white px-1 py-0.2 text-[10px]">
+                            {inText}
+                          </span>
+                          <span className="truncate max-w-[200px] text-[#141414]">
+                            {r.authors?.[0]?.lastName || 'Author'} ({r.publicationYear || 'n.d.'})
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Project Figures */}
             {project.figures && project.figures.length > 0 && (
-              <div className="space-y-3 pt-4 border-t border-slate-800">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              <div className="space-y-3 pt-4 border-t border-[#141414]">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-[#141414] font-mono">
                   Associated Scientific Figures ({project.figures.length})
                 </h3>
                 {project.figures.map((fig) => (
-                  <div key={fig.id} className="bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-2">
-                    <div className="aspect-video bg-slate-900 rounded-md border border-slate-800 flex items-center justify-center text-slate-400 relative overflow-hidden">
+                  <div key={fig.id} className="bg-[#FAF9F7] border border-[#141414] p-4 space-y-2">
+                    <div className="aspect-video bg-white border border-[#141414]/30 flex items-center justify-center text-gray-400 relative overflow-hidden">
                       {fig.imageUrl ? (
                         <img src={fig.imageUrl} alt={fig.caption} className="object-cover w-full h-full" referrerPolicy="no-referrer" />
                       ) : (
                         <div className="text-center p-4">
-                          <FileText className="w-8 h-8 text-indigo-400 mx-auto mb-1" />
-                          <span className="text-xs font-mono text-slate-300">[Figure {fig.figureNumber}: {fig.title}]</span>
+                          <FileText className="w-8 h-8 text-[#141414] mx-auto mb-1" />
+                          <span className="text-xs font-mono text-[#141414]">[Figure {fig.figureNumber}: {fig.title}]</span>
                         </div>
                       )}
                     </div>
-                    <div className="text-xs text-slate-300 font-serif-academic">
-                      <strong className="text-white font-sans-ui">Figure {fig.figureNumber}: </strong>
+                    <div className="text-xs text-[#141414] font-serif-academic">
+                      <strong className="font-sans-ui font-bold">Figure {fig.figureNumber}: </strong>
                       {fig.caption}
                     </div>
                   </div>
@@ -1120,31 +1817,31 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
 
             {/* Project Tables */}
             {project.tables && project.tables.length > 0 && (
-              <div className="space-y-3 pt-4 border-t border-slate-800">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              <div className="space-y-3 pt-4 border-t border-[#141414]">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-[#141414] font-mono">
                   Associated Empirical Tables ({project.tables.length})
                 </h3>
                 {project.tables.map((tbl) => (
-                  <div key={tbl.id} className="bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-2">
-                    <div className="text-xs font-semibold text-white">
+                  <div key={tbl.id} className="bg-[#FAF9F7] border border-[#141414] p-4 space-y-2">
+                    <div className="text-xs font-bold text-[#141414] font-mono">
                       Table {tbl.tableNumber}: {tbl.title}
                     </div>
                     <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs border border-slate-800">
-                        <thead className="bg-slate-900 text-slate-200">
+                      <table className="w-full text-left text-xs border border-[#141414]">
+                        <thead className="bg-[#F0EFED] text-[#141414]">
                           <tr>
                             {tbl.headers.map((h, i) => (
-                              <th key={i} className="p-2 border-b border-slate-800 font-semibold">
+                              <th key={i} className="p-2 border-b border-r border-[#141414] font-bold">
                                 {h}
                               </th>
                             ))}
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-800 font-mono text-[11px] text-slate-300">
+                        <tbody className="divide-y divide-[#141414]/20 font-mono text-[11px] text-[#141414]">
                           {tbl.rows.map((row, rIdx) => (
-                            <tr key={rIdx} className="hover:bg-slate-900/50">
+                            <tr key={rIdx} className="hover:bg-white">
                               {row.map((cell, cIdx) => (
-                                <td key={cIdx} className="p-2">
+                                <td key={cIdx} className="p-2 border-r border-[#141414]/20">
                                   {cell}
                                 </td>
                               ))}
@@ -1157,32 +1854,43 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
                 ))}
               </div>
             )}
+
+            {/* Generated References & Bibliography Section */}
+            <div className="pt-4 border-t border-[#141414]">
+              <ManuscriptReferencesSection
+                project={project}
+                citationStyle={activeCitationStyle}
+                onCitationStyleChange={handleCitationStyleChange}
+                onNavigateToLiteratureLibrary={() => setActiveTab('references')}
+                onAppendReferencesToManuscript={handleAppendReferencesToManuscript}
+              />
+            </div>
           </div>
 
           {/* Right Column: Assistant & Fact Inspector */}
-          <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4 shadow-sm">
+          <div className="lg:col-span-3 bg-[#F0EFED] border border-[#141414] p-3 space-y-3">
             {/* Sub-Tabs */}
-            <div className="flex border-b border-slate-800 pb-2 gap-1">
+            <div className="flex border-b border-[#141414] pb-1 gap-1">
               <button
                 onClick={() => setActiveRightTab('assistant')}
-                className={`flex-1 py-1.5 text-xs font-semibold text-center rounded transition-colors cursor-pointer ${
-                  activeRightTab === 'assistant' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                className={`flex-1 py-1.5 text-xs font-bold text-center transition-colors cursor-pointer font-mono ${
+                  activeRightTab === 'assistant' ? 'bg-[#141414] text-white' : 'text-[#141414] hover:bg-[#E4E3E0]'
                 }`}
               >
                 Academic Tools
               </button>
               <button
                 onClick={() => setActiveRightTab('facts')}
-                className={`flex-1 py-1.5 text-xs font-semibold text-center rounded transition-colors cursor-pointer ${
-                  activeRightTab === 'facts' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                className={`flex-1 py-1.5 text-xs font-bold text-center transition-colors cursor-pointer font-mono ${
+                  activeRightTab === 'facts' ? 'bg-[#141414] text-white' : 'text-[#141414] hover:bg-[#E4E3E0]'
                 }`}
               >
                 Facts ({project.facts?.length || 0})
               </button>
               <button
                 onClick={() => setActiveRightTab('plan')}
-                className={`flex-1 py-1.5 text-xs font-semibold text-center rounded transition-colors cursor-pointer ${
-                  activeRightTab === 'plan' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                className={`flex-1 py-1.5 text-xs font-bold text-center transition-colors cursor-pointer font-mono ${
+                  activeRightTab === 'plan' ? 'bg-[#141414] text-white' : 'text-[#141414] hover:bg-[#E4E3E0]'
                 }`}
               >
                 Plan Specs
@@ -1190,12 +1898,12 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
             </div>
 
             {activeRightTab === 'assistant' ? (
-              <div className="space-y-4">
-                <div className="space-y-1">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block">
+              <div className="space-y-3">
+                <div className="space-y-0.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-[#141414] block font-mono">
                     Scholarly Transformations
                   </span>
-                  <p className="text-[11px] text-slate-500">
+                  <p className="text-[11px] text-[#555]">
                     {selectedText ? 'Will apply to highlighted text snippet.' : 'Will apply to current active section.'}
                   </p>
                 </div>
@@ -1205,86 +1913,86 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
                   <button
                     onClick={() => handleRunAssistant('improve_academic_style')}
                     disabled={assistantLoading}
-                    className="p-2.5 rounded-md bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 text-left transition-colors cursor-pointer"
+                    className="p-2 bg-white hover:bg-[#E9E8E5] border border-[#141414] text-[#141414] text-left transition-colors cursor-pointer"
                   >
-                    <Sparkles className="w-3.5 h-3.5 text-indigo-400 mb-1" />
-                    <span className="font-semibold block text-[11px]">Academic Style</span>
+                    <Sparkles className="w-3.5 h-3.5 text-[#141414] mb-1" />
+                    <span className="font-bold block text-[11px]">Academic Style</span>
                   </button>
 
                   <button
                     onClick={() => handleRunAssistant('check_claim')}
                     disabled={assistantLoading}
-                    className="p-2.5 rounded-md bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 text-left transition-colors cursor-pointer"
+                    className="p-2 bg-white hover:bg-[#E9E8E5] border border-[#141414] text-[#141414] text-left transition-colors cursor-pointer"
                   >
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 mb-1" />
-                    <span className="font-semibold block text-[11px]">Hedge Claims</span>
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-700 mb-1" />
+                    <span className="font-bold block text-[11px]">Hedge Claims</span>
                   </button>
 
                   <button
                     onClick={() => handleRunAssistant('condense')}
                     disabled={assistantLoading}
-                    className="p-2.5 rounded-md bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 text-left transition-colors cursor-pointer"
+                    className="p-2 bg-white hover:bg-[#E9E8E5] border border-[#141414] text-[#141414] text-left transition-colors cursor-pointer"
                   >
-                    <Sliders className="w-3.5 h-3.5 text-amber-400 mb-1" />
-                    <span className="font-semibold block text-[11px]">Synthesize & Condense</span>
+                    <Sliders className="w-3.5 h-3.5 text-amber-700 mb-1" />
+                    <span className="font-bold block text-[11px]">Synthesize</span>
                   </button>
 
                   <button
                     onClick={() => handleRunAssistant('figure_caption')}
                     disabled={assistantLoading}
-                    className="p-2.5 rounded-md bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 text-left transition-colors cursor-pointer"
+                    className="p-2 bg-white hover:bg-[#E9E8E5] border border-[#141414] text-[#141414] text-left transition-colors cursor-pointer"
                   >
-                    <Info className="w-3.5 h-3.5 text-indigo-400 mb-1" />
-                    <span className="font-semibold block text-[11px]">Fig. Caption</span>
+                    <Info className="w-3.5 h-3.5 text-[#141414] mb-1" />
+                    <span className="font-bold block text-[11px]">Fig. Caption</span>
                   </button>
 
                   <button
                     onClick={() => handleRunAssistant('table_caption')}
                     disabled={assistantLoading}
-                    className="p-2.5 rounded-md bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 text-left transition-colors cursor-pointer"
+                    className="p-2 bg-white hover:bg-[#E9E8E5] border border-[#141414] text-[#141414] text-left transition-colors cursor-pointer"
                   >
-                    <TableIcon className="w-3.5 h-3.5 text-sky-400 mb-1" />
-                    <span className="font-semibold block text-[11px]">Table Caption</span>
+                    <TableIcon className="w-3.5 h-3.5 text-[#141414] mb-1" />
+                    <span className="font-bold block text-[11px]">Table Caption</span>
                   </button>
 
                   <button
                     onClick={() => handleRunAssistant('find_missing_info')}
                     disabled={assistantLoading}
-                    className="p-2.5 rounded-md bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 text-left transition-colors cursor-pointer"
+                    className="p-2 bg-white hover:bg-[#E9E8E5] border border-[#141414] text-[#141414] text-left transition-colors cursor-pointer"
                   >
-                    <Search className="w-3.5 h-3.5 text-rose-400 mb-1" />
-                    <span className="font-semibold block text-[11px]">Missing Info</span>
+                    <Search className="w-3.5 h-3.5 text-rose-700 mb-1" />
+                    <span className="font-bold block text-[11px]">Missing Info</span>
                   </button>
                 </div>
 
                 {/* Assistant Output Result Box */}
                 {assistantLoading ? (
-                  <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg text-center space-y-2">
-                    <RefreshCw className="w-5 h-5 text-indigo-400 animate-spin mx-auto" />
-                    <span className="text-xs text-slate-400 block font-sans-ui">Processing academic transformation...</span>
+                  <div className="p-4 bg-white border border-[#141414] text-center space-y-2">
+                    <RefreshCw className="w-5 h-5 text-[#141414] animate-spin mx-auto" />
+                    <span className="text-xs text-[#555] block font-mono">Processing academic transformation...</span>
                   </div>
                 ) : assistantResult ? (
-                  <div className="bg-slate-950 border border-indigo-900/60 rounded-lg p-3.5 space-y-3 text-xs">
-                    <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
-                      <span className="font-semibold text-indigo-300">Proposal Result</span>
+                  <div className="bg-white border border-[#141414] p-3 space-y-2 text-xs">
+                    <div className="flex items-center justify-between border-b border-[#141414] pb-1">
+                      <span className="font-bold text-[#141414] font-mono">Proposal Result</span>
                       <button
                         onClick={() => setAssistantResult(null)}
-                        className="text-slate-500 hover:text-white cursor-pointer"
+                        className="text-[#666] hover:text-black cursor-pointer font-bold"
                       >
                         Dismiss
                       </button>
                     </div>
-                    <p className="text-slate-200 font-serif-academic leading-relaxed text-xs whitespace-pre-wrap">
+                    <p className="text-[#141414] font-serif-academic leading-relaxed text-xs whitespace-pre-wrap">
                       {assistantResult}
                     </p>
                     {assistantExplanation && (
-                      <div className="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1.5 italic font-sans-ui">
+                      <div className="text-[10px] text-[#555] border-t border-[#141414]/20 pt-1 italic font-sans-ui">
                         {assistantExplanation}
                       </div>
                     )}
                     <button
                       onClick={handleApplyAssistantResult}
-                      className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+                      className="w-full py-1.5 bg-[#141414] hover:bg-[#2A2A2A] text-white text-xs font-bold transition-colors cursor-pointer font-mono"
                     >
                       Apply Changes to Document
                     </button>
@@ -1687,13 +2395,11 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
           project={project}
           onUpdateProject={onUpdateProject}
           userId={userId}
-          onInsertReferenceToEditor={(citeKey) => {
-            if (activeSection) {
-              const citeTag = ` [${citeKey}]`;
-              handleSectionContentChange((activeSection.content || '') + citeTag);
-              setActiveTab('editor');
-            }
-          }}
+          onInsertCitation={handleInsertCitation}
+          onInsertReferenceToEditor={handleInsertReferenceToEditor}
+          currentPlan={currentPlan}
+          onPlanUpgraded={onPlanUpgraded}
+          onNavigateToPricing={onNavigateToPricing}
         />
       )}
 
@@ -1906,6 +2612,27 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
         </div>
       )}
 
+      {/* TAB: LAYOUT PREVIEW */}
+      {activeTab === 'layout_preview' && (
+        <ManuscriptLayoutPreview
+          project={project}
+          activeProfile={activeFormattingProfile}
+          onSelectProfile={handleSelectFormattingProfile}
+          onClose={() => setActiveTab('editor')}
+        />
+      )}
+
+      {/* TAB: FORMATTING PROFILES */}
+      {activeTab === 'formatting_profile' && (
+        <FormatProfileSelector
+          project={project}
+          activeProfile={activeFormattingProfile}
+          onSelectProfile={handleSelectFormattingProfile}
+          onUpdateCustomProfile={handleUpdateCustomProfile}
+          onOpenPreview={() => setActiveTab('layout_preview')}
+        />
+      )}
+
       {/* Add Fact Modal */}
       {isAddFactOpen && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4 z-50">
@@ -2037,6 +2764,22 @@ export const ManuscriptWorkspace: React.FC<ManuscriptWorkspaceProps> = ({
           </div>
         </div>
       )}
+
+      {/* Subscription Upgrade Modal */}
+      <UpgradeModal
+        isOpen={showUpgradeModal}
+        onClose={() => setShowUpgradeModal(false)}
+        reasonTitle={upgradeReason.title}
+        reasonDescription={upgradeReason.description}
+        targetPlan={upgradeReason.targetPlan}
+        currentPlan={currentPlan}
+        userProfile={userProfile || null}
+        userId={userId}
+        onPlanUpgraded={(newPlan) => {
+          if (onPlanUpgraded) onPlanUpgraded(newPlan);
+          setShowUpgradeModal(false);
+        }}
+      />
     </div>
   );
 };

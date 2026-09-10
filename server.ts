@@ -1,21 +1,16 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import dotenv from 'dotenv';
-import { apiRouter } from './server/routes';
-
-dotenv.config();
+import { createApiApp } from './server/app';
 
 async function startServer() {
-  const app = express();
+  const app = createApiApp();
   const PORT = 3000;
 
-  // Body parsers
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
-  // Mount API routes FIRST
-  app.use('/api', apiRouter);
+  // 404 handler for unrecognized API routes in standalone server
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: 'API endpoint not found' });
+  });
 
   // Vite middleware for development vs static build in production
   if (process.env.NODE_ENV !== 'production') {

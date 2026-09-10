@@ -2042,7 +2042,7 @@ Return a valid JSON object matching this structure:
   }
 }
 
-function fallbackGenerateSection(
+export function fallbackGenerateSection(
   sectionTitle: string,
   payload: ExtractAndGeneratePayload,
   relevantFacts?: ResearchFact[]

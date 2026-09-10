@@ -7,4 +7,7 @@ app.all('*', (req, res) => {
   res.status(404).json({ error: 'API endpoint not found' });
 });
 
+// Support both CommonJS (app / listener) and ESM (.default) resolution
+(app as any).default = app;
+
 export default app;

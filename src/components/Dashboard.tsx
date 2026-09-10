@@ -27,6 +27,8 @@ import {
 import { Project, UserProfile } from '../types';
 import { DOCUMENT_TYPE_OPTIONS } from '../data/catalog';
 import { isSupabaseConfigured } from '../services/supabase';
+import { PlanTier, PLAN_CONFIGS } from '../types/subscription';
+import { UpgradeModal } from './UpgradeModal';
 
 interface DashboardProps {
   projects: Project[];
@@ -42,6 +44,8 @@ interface DashboardProps {
   onNavigate: (view: string) => void;
   isAuthenticated: boolean;
   onOpenAuthModal: () => void;
+  currentPlan?: PlanTier;
+  onPlanUpgraded?: (plan: PlanTier) => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -58,10 +62,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onNavigate,
   isAuthenticated,
   onOpenAuthModal,
+  currentPlan = 'FREE',
+  onPlanUpgraded,
 }) => {
   const [activeTab, setActiveTab] = useState<'all' | 'user' | 'demo' | 'files'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
   // Deletion modal state
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
@@ -70,6 +77,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
   // Rename modal state
   const [projectToRename, setProjectToRename] = useState<Project | null>(null);
   const [newTitle, setNewTitle] = useState('');
+
+  const userProjectsCount = projects.filter((p) => !p.isDemoProject).length;
+  const planLimits = PLAN_CONFIGS[currentPlan];
+
+  const handleCreateProjectSafe = () => {
+    if (userProjectsCount >= planLimits.maxActiveProjects) {
+      setShowUpgradeModal(true);
+      return;
+    }
+    onNewProject();
+  };
 
   // Filter projects
   const filteredProjects = projects.filter((p) => {
@@ -88,7 +106,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   // Calculate statistics
   const totalProjects = projects.length;
-  const userProjectsCount = projects.filter((p) => !p.isDemoProject).length;
   const demoProjectsCount = projects.filter((p) => p.isDemoProject).length;
   const totalFacts = projects.reduce((acc, p) => acc + (p.facts?.length || 0), 0);
   const totalFiles = projects.reduce((acc, p) => acc + (p.files?.length || 0), 0);
@@ -149,7 +166,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           )}
           <button
             id="dash-new-project-btn"
-            onClick={onNewProject}
+            onClick={handleCreateProjectSafe}
             className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition-all shadow-md shadow-indigo-950/40 flex items-center gap-2 cursor-pointer"
           >
             <PlusCircle className="w-4 h-4" />
@@ -163,9 +180,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex items-center justify-between">
           <div>
             <span className="text-slate-400 text-xs uppercase font-medium">Your Projects</span>
-            <div className="text-2xl font-bold text-white mt-0.5">{userProjectsCount}</div>
+            <div className="text-2xl font-bold text-white mt-0.5">
+              {userProjectsCount}
+              <span className="text-xs text-slate-400 font-normal ml-1">
+                / {planLimits.maxActiveProjects === Infinity ? '∞' : planLimits.maxActiveProjects}
+              </span>
+            </div>
             <span className="text-[11px] text-indigo-400">
-              {demoProjectsCount} demo references available
+              {planLimits.name} plan capacity
             </span>
           </div>
           <div className="w-10 h-10 rounded-lg bg-indigo-950/80 border border-indigo-800/60 flex items-center justify-center text-indigo-400">
@@ -331,7 +353,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     : 'Get started by creating your first academic research project.'}
                 </p>
                 <button
-                  onClick={onNewProject}
+                  onClick={handleCreateProjectSafe}
                   className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md transition-colors"
                 >
                   <PlusCircle className="w-3.5 h-3.5" />
@@ -596,6 +618,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
       )}
+
+      {/* Upgrade Modal for Active Project Limits */}
+      <UpgradeModal
+        isOpen={showUpgradeModal}
+        onClose={() => setShowUpgradeModal(false)}
+        reasonTitle="Active Project Limit Reached"
+        reasonDescription={`You have ${userProjectsCount} active project${userProjectsCount > 1 ? 's' : ''}. The ${planLimits.name} plan allows up to ${planLimits.maxActiveProjects} active project${planLimits.maxActiveProjects > 1 ? 's' : ''}. Upgrade to start new manuscripts.`}
+        targetPlan={currentPlan === 'FREE' ? 'RESEARCHER' : 'PRO_RESEARCHER'}
+        currentPlan={currentPlan}
+        userProfile={userProfile}
+        userId={userProfile?.id}
+        onPlanUpgraded={(newPlan) => {
+          if (onPlanUpgraded) onPlanUpgraded(newPlan);
+          setShowUpgradeModal(false);
+          onNewProject();
+        }}
+      />
     </div>
   );
 };
