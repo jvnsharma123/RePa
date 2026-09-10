@@ -1,3 +1,2 @@
-# Exclude any TypeScript or stale ESM files in api/ to guarantee Vercel deploys the pre-bundled api/index.cjs
+# Exclude only the obsolete TypeScript serverless entrypoint
 api/index.ts
-api/index.js
