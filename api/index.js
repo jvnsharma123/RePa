@@ -4259,4 +4259,3 @@ app.all("*", (req, res) => {
 });
 app.default = app;
 var apiEntry_default = app;
-module.exports = Object.assign(app, { default: app });
