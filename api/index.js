@@ -1,44 +1,9 @@
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-
-// server/apiEntry.ts
-var apiEntry_exports = {};
-__export(apiEntry_exports, {
-  default: () => apiEntry_default
-});
-module.exports = __toCommonJS(apiEntry_exports);
-
 // server/app.ts
-var import_express2 = __toESM(require("express"), 1);
-var import_dotenv = __toESM(require("dotenv"), 1);
+import express from "express";
+import dotenv from "dotenv";
 
 // server/routes.ts
-var import_express = require("express");
+import { Router } from "express";
 
 // src/data/catalog.ts
 var DOCUMENT_TYPE_OPTIONS = [
@@ -362,7 +327,7 @@ var DEMO_SAMPLE_PROJECTS = [
 ];
 
 // server/geminiService.ts
-var import_genai = require("@google/genai");
+import { GoogleGenAI } from "@google/genai";
 var aiClient = null;
 function getAiClient() {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -370,7 +335,7 @@ function getAiClient() {
     return null;
   }
   if (!aiClient) {
-    aiClient = new import_genai.GoogleGenAI({
+    aiClient = new GoogleGenAI({
       apiKey,
       httpOptions: {
         headers: {
@@ -2898,17 +2863,17 @@ Conclusions: ${projectData.conclusion || "Findings support the formulated hypoth
 }
 
 // server/razorpayService.ts
-var import_crypto = __toESM(require("crypto"), 1);
-var import_razorpay = __toESM(require("razorpay"), 1);
+import crypto from "crypto";
+import Razorpay from "razorpay";
 
 // server/supabaseAdmin.ts
-var import_supabase_js = require("@supabase/supabase-js");
+import { createClient } from "@supabase/supabase-js";
 var supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
 var serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
 var isServerSupabaseConfigured = Boolean(
   supabaseUrl && serviceRoleKey && supabaseUrl.startsWith("http") && !supabaseUrl.includes("placeholder")
 );
-var supabaseAdmin = isServerSupabaseConfigured ? (0, import_supabase_js.createClient)(supabaseUrl, serviceRoleKey, {
+var supabaseAdmin = isServerSupabaseConfigured ? createClient(supabaseUrl, serviceRoleKey, {
   auth: {
     persistSession: false,
     autoRefreshToken: false
@@ -3043,8 +3008,8 @@ async function getMonthlyUsageCounts(userId) {
     const { data, error } = await supabaseAdmin.from("usage_records").select("action_type").eq("user_id", userId).gte("created_at", startOfMonth.toISOString());
     if (error || !data) return { aiAnalyses: 0, exports: 0 };
     const aiAnalyses = data.filter((d) => d.action_type === "ai_analysis").length;
-    const exports2 = data.filter((d) => d.action_type === "export").length;
-    return { aiAnalyses, exports: exports2 };
+    const exports = data.filter((d) => d.action_type === "export").length;
+    return { aiAnalyses, exports };
   } catch {
     return { aiAnalyses: 0, exports: 0 };
   }
@@ -3061,7 +3026,7 @@ var razorpayInstance = null;
 function getRazorpayClient() {
   if (!isRazorpayConfigured) return null;
   if (!razorpayInstance) {
-    razorpayInstance = new import_razorpay.default({
+    razorpayInstance = new Razorpay({
       key_id: RAZORPAY_KEY_ID,
       key_secret: RAZORPAY_KEY_SECRET
     });
@@ -3220,9 +3185,9 @@ async function verifyPaymentAndActivate(params) {
   }
   let expectedSignature = "";
   if (razorpaySubscriptionId) {
-    expectedSignature = import_crypto.default.createHmac("sha256", RAZORPAY_KEY_SECRET).update(`${razorpayPaymentId}|${razorpaySubscriptionId}`).digest("hex");
+    expectedSignature = crypto.createHmac("sha256", RAZORPAY_KEY_SECRET).update(`${razorpayPaymentId}|${razorpaySubscriptionId}`).digest("hex");
   } else if (razorpayOrderId) {
-    expectedSignature = import_crypto.default.createHmac("sha256", RAZORPAY_KEY_SECRET).update(`${razorpayOrderId}|${razorpayPaymentId}`).digest("hex");
+    expectedSignature = crypto.createHmac("sha256", RAZORPAY_KEY_SECRET).update(`${razorpayOrderId}|${razorpayPaymentId}`).digest("hex");
   } else {
     return { success: false, error: "Missing subscription ID or order ID for verification", plan: "FREE" };
   }
@@ -3249,7 +3214,7 @@ async function verifyPaymentAndActivate(params) {
 }
 async function handleRazorpayWebhook(rawBody, signatureHeader) {
   if (RAZORPAY_WEBHOOK_SECRET) {
-    const expectedSig = import_crypto.default.createHmac("sha256", RAZORPAY_WEBHOOK_SECRET).update(rawBody).digest("hex");
+    const expectedSig = crypto.createHmac("sha256", RAZORPAY_WEBHOOK_SECRET).update(rawBody).digest("hex");
     if (expectedSig !== signatureHeader) {
       console.error("[Razorpay Webhook] Invalid webhook signature");
       throw new Error("Invalid webhook signature");
@@ -3338,7 +3303,7 @@ async function cancelUserSubscription(userId, subscriptionId) {
 }
 
 // server/routes.ts
-var apiRouter = (0, import_express.Router)();
+var apiRouter = Router();
 var userProjects = [];
 var currentUserProfile = {
   id: "usr-researcher-01",
@@ -4216,18 +4181,18 @@ apiRouter.post("/usage/record", async (req, res) => {
 });
 
 // server/app.ts
-import_dotenv.default.config();
+dotenv.config();
 function createApiApp() {
-  const app2 = (0, import_express2.default)();
+  const app2 = express();
   app2.use(
-    import_express2.default.json({
+    express.json({
       limit: "50mb",
       verify: (req, _res, buf) => {
         req.rawBody = buf.toString("utf8");
       }
     })
   );
-  app2.use(import_express2.default.urlencoded({ extended: true, limit: "50mb" }));
+  app2.use(express.urlencoded({ extended: true, limit: "50mb" }));
   app2.use((req, _res, next) => {
     const matchedPath = req.headers["x-matched-path"] || req.headers["x-now-route-matches"] || req.headers["x-forwarded-uri"];
     if (typeof matchedPath === "string" && matchedPath.startsWith("/api") && (req.url === "/api" || req.url === "/api/" || req.url.startsWith("/api?"))) {
@@ -4259,3 +4224,6 @@ app.all("*", (req, res) => {
 });
 app.default = app;
 var apiEntry_default = app;
+export {
+  apiEntry_default as default
+};
