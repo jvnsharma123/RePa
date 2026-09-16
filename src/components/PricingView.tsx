@@ -201,7 +201,7 @@ export const PricingView: React.FC<PricingViewProps> = ({
 
             <h3 className="text-xl font-bold text-[#141414]">Researcher</h3>
             <div className="mt-3 flex items-baseline gap-1">
-              <span className="text-3xl font-bold text-[#141414]">₹299</span>
+              <span className="text-3xl font-bold text-[#141414]">₹499</span>
               <span className="text-xs text-[#141414]/60 font-mono">/ month</span>
             </div>
             <p className="text-xs text-[#141414]/70 mt-2">

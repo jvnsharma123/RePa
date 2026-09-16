@@ -41,7 +41,7 @@ export const PLAN_PRICING = {
   RESEARCHER: {
     id: 'RESEARCHER',
     name: 'Researcher Plan',
-    amount: 29900, // in paise (₹299.00)
+    amount: 49900, // in paise (₹499.00)
     currency: 'INR',
     period: 'monthly',
     envPlanId: process.env.RAZORPAY_PLAN_RESEARCHER_ID,

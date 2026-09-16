@@ -1434,7 +1434,7 @@ export const ReferenceLibraryWorkspace: React.FC<ReferenceLibraryWorkspaceProps>
         isOpen={showUpgradeModal}
         onClose={() => setShowUpgradeModal(false)}
         reasonTitle="Reference Library Limit Reached"
-        reasonDescription={`The Free plan allows up to 20 literature references per project (you currently have ${references.length}). Upgrade to Researcher (₹299/mo) for unlimited references, automatic BibTeX/RIS ingestion, and full citation styling.`}
+        reasonDescription={`The Free plan allows up to 20 literature references per project (you currently have ${references.length}). Upgrade to Researcher (₹499/mo) for unlimited references, automatic BibTeX/RIS ingestion, and full citation styling.`}
         targetPlan="RESEARCHER"
         currentPlan={currentPlan}
         userId={userId}

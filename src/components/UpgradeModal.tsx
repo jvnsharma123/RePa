@@ -103,7 +103,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
               </div>
               <h4 className="text-base font-bold text-[#141414] mt-1">Researcher</h4>
               <div className="mt-2 flex items-baseline gap-1">
-                <span className="text-2xl font-bold text-[#141414]">₹299</span>
+                <span className="text-2xl font-bold text-[#141414]">₹499</span>
                 <span className="text-xs text-[#141414]/60 font-mono">/ month</span>
               </div>
 
@@ -145,7 +145,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                 </>
               ) : (
                 <>
-                  <span>Upgrade (₹299/mo)</span>
+                  <span>Upgrade (₹499/mo)</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </>
               )}

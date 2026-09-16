@@ -43,7 +43,7 @@ export const PLAN_CONFIGS: Record<PlanTier, PlanLimits> = {
   RESEARCHER: {
     tier: 'RESEARCHER',
     name: 'Researcher',
-    price: 299,
+    price: 499,
     billingPeriod: 'month',
     maxActiveProjects: 5,
     maxAiAnalysesPerMonth: 100,

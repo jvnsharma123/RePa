@@ -241,7 +241,7 @@ export const AIContentAnalysisView: React.FC<AIContentAnalysisViewProps> = ({
         isOpen={showUpgradeModal}
         onClose={() => setShowUpgradeModal(false)}
         reasonTitle="Upgrade for More AI Analyses"
-        reasonDescription={`You have used ${currentUsage.aiAnalysesThisMonth} of ${planConfig.maxAiAnalysesPerMonth} AI analyses on the ${planConfig.name} tier. Upgrade to Researcher (₹299/mo) for 100/mo or Pro Researcher (₹699/mo) for 300/mo.`}
+        reasonDescription={`You have used ${currentUsage.aiAnalysesThisMonth} of ${planConfig.maxAiAnalysesPerMonth} AI analyses on the ${planConfig.name} tier. Upgrade to Researcher (₹499/mo) for 100/mo or Pro Researcher (₹699/mo) for 300/mo.`}
         targetPlan={currentPlan === 'FREE' ? 'RESEARCHER' : 'PRO_RESEARCHER'}
         currentPlan={currentPlan}
         userProfile={userProfile || null}
