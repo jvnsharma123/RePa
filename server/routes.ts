@@ -950,6 +950,22 @@ apiRouter.get('/subscription/config', (req, res) => {
     plans: PLAN_PRICING,
   });
 });
+apiRouter.get('/subscription/credential-check', (_req, res) => {
+  const keyId = process.env.RAZORPAY_KEY_ID || '';
+  const secret = process.env.RAZORPAY_KEY_SECRET || '';
+  res.json({
+    keyIdPresent: Boolean(keyId),
+    keyIdPrefix: keyId.slice(0, 9),
+    keyIdLength: keyId.length,
+    secretPresent: Boolean(secret),
+    secretLength: secret.length,
+    secretHasLeadingWhitespace: /^\s/.test(secret),
+    secretHasTrailingWhitespace: /\s$/.test(secret),
+    secretHasQuotes: /^["']|["']$/.test(secret),
+    sameMode: keyId.startsWith('rzp_test_') ? 'TEST' : keyId.startsWith('rzp_live_') ? 'LIVE' : 'UNKNOWN'
+  });
+});  
+
 
 /**
  * Create a subscription checkout session for Researcher or Pro Researcher
@@ -1084,4 +1100,3 @@ apiRouter.post('/usage/record', async (req, res) => {
     res.status(500).json({ error: err.message || 'Failed to record usage' });
   }
 });
-
