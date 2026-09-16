@@ -3095,6 +3095,22 @@ var PLAN_PRICING = {
     envPlanId: process.env.RAZORPAY_PLAN_PRO_RESEARCHER_ID
   }
 };
+function extractSafeRazorpayDiagnostic(operation, err) {
+  const statusCode = err?.statusCode || err?.status || null;
+  const razorpayErrorObj = typeof err?.error === "object" && err?.error !== null ? err.error : null;
+  const rawCode = razorpayErrorObj?.code || (typeof err?.code === "string" ? err.code : null);
+  const rawDescription = razorpayErrorObj?.description || (typeof err?.error === "string" ? err.error : null) || err?.description || err?.message || (statusCode ? `HTTP ${statusCode} error` : "Unknown Razorpay error");
+  const cleanDescription = String(rawDescription).replace(
+    /(key_secret|secret|password|token)=[^\s&]+/gi,
+    "$1=[REDACTED]"
+  );
+  return {
+    operation,
+    statusCode,
+    code: rawCode ? String(rawCode) : null,
+    description: cleanDescription
+  };
+}
 async function getOrCreateRazorpayPlanId(planTier) {
   const rzp = getRazorpayClient();
   if (!rzp) return null;
@@ -3119,7 +3135,10 @@ async function getOrCreateRazorpayPlanId(planTier) {
     });
     return createdPlan.id;
   } catch (err) {
-    console.warn("[Razorpay] Plan creation fallback notice:", err?.message || err);
+    const planDiag = extractSafeRazorpayDiagnostic("plans.create", err);
+    console.warn(
+      `[Razorpay] plans.create notice: status=${planDiag.statusCode || "N/A"}, code=${planDiag.code || "N/A"}, description=${planDiag.description}`
+    );
     return null;
   }
 }
@@ -3131,11 +3150,13 @@ async function createCheckoutSession(params) {
   }
   const rzp = getRazorpayClient();
   if (rzp) {
+    let activeOperation = "orders.create";
     try {
       const planId = await getOrCreateRazorpayPlanId(planTier);
       let subscriptionId = null;
       if (planId) {
         try {
+          activeOperation = "subscriptions.create";
           const subscription = await rzp.subscriptions.create({
             plan_id: planId,
             total_count: 12,
@@ -3150,9 +3171,13 @@ async function createCheckoutSession(params) {
           });
           subscriptionId = subscription.id;
         } catch (subErr) {
-          console.warn("[Razorpay] Recurring subscription creation notice:", subErr);
+          const subDiag = extractSafeRazorpayDiagnostic("subscriptions.create", subErr);
+          console.warn(
+            `[Razorpay] subscriptions.create notice: status=${subDiag.statusCode || "N/A"}, code=${subDiag.code || "N/A"}, description=${subDiag.description}`
+          );
         }
       }
+      activeOperation = "orders.create";
       const order = await rzp.orders.create({
         amount: planInfo.amount,
         currency: planInfo.currency,
@@ -3174,8 +3199,18 @@ async function createCheckoutSession(params) {
         planName: planInfo.name
       };
     } catch (err) {
-      console.error("[Razorpay] Failed to create checkout with Razorpay API:", err);
-      throw new Error(`Razorpay checkout initialization failed: ${err.message || "Check credentials"}`);
+      const diag = extractSafeRazorpayDiagnostic(activeOperation, err);
+      console.error(
+        `[Razorpay] ${diag.operation} failed: status=${diag.statusCode || "N/A"}, code=${diag.code || "N/A"}, description=${diag.description}`
+      );
+      const parts = [
+        diag.description,
+        diag.statusCode ? `status: ${diag.statusCode}` : null,
+        diag.code ? `code: ${diag.code}` : null
+      ].filter(Boolean);
+      throw new Error(
+        `Razorpay checkout initialization failed during ${diag.operation}: ${parts.join(", ")}`
+      );
     }
   }
   const mockSubId = `sub_test_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
